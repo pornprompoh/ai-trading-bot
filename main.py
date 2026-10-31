@@ -9,6 +9,7 @@ from logging.handlers import RotatingFileHandler
 from config.settings import (
     AUTO_TRADING_ENABLED,
     MAX_RECONNECT_DELAY_SECONDS,
+    POSITION_MANAGEMENT_INTERVAL_SECONDS,
     PROJECT_ROOT,
     SCAN_INTERVAL_SECONDS,
     WATCHLIST,
@@ -37,8 +38,18 @@ from engine.mt5_connector import (
     is_demo_account,
     shutdown,
 )
-from engine.order_executor import calculate_lot_size, close_all_positions, open_order
-from engine.strategy import calculate_indicators, detect_signal
+from engine.order_executor import (
+    calculate_lot_size,
+    close_all_positions,
+    manage_open_positions,
+    open_order,
+)
+from engine.risk_manager import check_entry_risk, observe_spread
+from engine.strategy import (
+    calculate_indicators,
+    classify_market_regime,
+    detect_signal,
+)
 
 logger = logging.getLogger("trading_engine")
 _processed_signal_candles: dict[str, str] = {}
@@ -69,21 +80,15 @@ def configure_logging() -> None:
 
 
 def _scanner_reason(
-    ema_trend: str,
-    rsi: float | None,
-    previous_rsi: float | None,
+    market_regime: str,
+    h4_trend: str,
+    h1_trend: str,
 ) -> str:
-    if ema_trend == "bullish":
-        if rsi is not None and rsi >= 45:
-            return f"RSI neutral ({rsi:.1f}); waiting for pullback"
-        return "Waiting for RSI to turn upward"
-    if ema_trend == "bearish":
-        if rsi is not None and rsi <= 55:
-            return f"RSI neutral ({rsi:.1f}); waiting for a bounce"
-        return "Waiting for RSI to turn downward"
-    if rsi is not None and previous_rsi is not None:
-        return f"EMA trend mixed; RSI {rsi:.1f}"
-    return "Waiting for enough completed candles"
+    if market_regime != "TRENDING":
+        return f"Market regime {market_regime}; entries require TRENDING"
+    if h4_trend != h1_trend or h4_trend not in {"bullish", "bearish"}:
+        return "H4/H1 macro structure is mixed; waiting for alignment"
+    return "Waiting for M15 liquidity sweep, CHoCH, and FVG near H1 zone"
 
 
 def scan_watchlist(account_id: int, account_auto_trading: bool) -> None:
@@ -91,22 +96,39 @@ def scan_watchlist(account_id: int, account_auto_trading: bool) -> None:
     for asset in WATCHLIST:
         symbol = asset.symbol
         try:
-            bars = get_ohlcv(symbol, asset.timeframe, n_bars=300)
-            completed_bars = bars.iloc[:-1]
+            m15_bars = get_ohlcv(symbol, "M15", n_bars=300)
+            h1_bars = get_ohlcv(symbol, "H1", n_bars=300)
+            h4_bars = get_ohlcv(symbol, "H4", n_bars=300)
+            completed_bars = m15_bars.iloc[:-1]
+            completed_h1_bars = h1_bars.iloc[:-1]
+            completed_h4_bars = h4_bars.iloc[:-1]
             indicator_frame = calculate_indicators(completed_bars)
+            h1_indicator_frame = calculate_indicators(completed_h1_bars)
+            h4_indicator_frame = calculate_indicators(completed_h4_bars)
             current = indicator_frame.iloc[-1] if not indicator_frame.empty else None
-            previous = indicator_frame.iloc[-2] if len(indicator_frame) > 1 else None
             current_rsi = (
                 float(current["rsi_14"])
                 if current is not None and current["rsi_14"] == current["rsi_14"]
                 else None
             )
-            previous_rsi = (
-                float(previous["rsi_14"])
-                if previous is not None and previous["rsi_14"] == previous["rsi_14"]
-                else None
-            )
             last_price = get_last_price(symbol)
+            market_regime = classify_market_regime(indicator_frame)
+            current_h1 = h1_indicator_frame.iloc[-1]
+            current_h4 = h4_indicator_frame.iloc[-1]
+            h1_trend = (
+                "bullish"
+                if current_h1["close"] > current_h1["ema_50"] > current_h1["ema_200"]
+                else "bearish"
+                if current_h1["close"] < current_h1["ema_50"] < current_h1["ema_200"]
+                else "mixed"
+            )
+            h4_trend = (
+                "bullish"
+                if current_h4["close"] > current_h4["ema_50"] > current_h4["ema_200"]
+                else "bearish"
+                if current_h4["close"] < current_h4["ema_50"] < current_h4["ema_200"]
+                else "mixed"
+            )
             ema_trend = (
                 "bullish"
                 if current is not None
@@ -118,7 +140,14 @@ def scan_watchlist(account_id: int, account_auto_trading: bool) -> None:
                 and last_price < current["ema_200"]
                 else "mixed"
             )
-            signal = detect_signal(completed_bars, point=get_symbol_point(symbol))
+            point = get_symbol_point(symbol)
+            signal = detect_signal(
+                completed_bars,
+                point=point,
+                h1_df=completed_h1_bars,
+                h4_df=completed_h4_bars,
+            )
+            spread_assessment = observe_spread(symbol)
             position_open = has_open_position(symbol)
             signal_status = (
                 "position_open"
@@ -132,7 +161,7 @@ def scan_watchlist(account_id: int, account_auto_trading: bool) -> None:
                 if position_open
                 else "Entry conditions met; awaiting AI review"
                 if signal.signal_type != "NONE"
-                else _scanner_reason(ema_trend, current_rsi, previous_rsi)
+                else _scanner_reason(market_regime, h4_trend, h1_trend)
             )
             record_market_scan(
                 account_id,
@@ -162,6 +191,37 @@ def scan_watchlist(account_id: int, account_auto_trading: bool) -> None:
                 or signal.tp_points is None
             ):
                 raise RuntimeError(f"Strategy returned incomplete signal data for {symbol}.")
+            if not spread_assessment.approved:
+                record_market_scan(
+                    account_id,
+                    {
+                        "symbol": symbol,
+                        "timeframe": asset.timeframe,
+                        "last_price": last_price,
+                        "rsi": current_rsi,
+                        "ema_trend": ema_trend,
+                        "signal_status": "condition_met",
+                        "reason": f"Risk filter: {spread_assessment.reason}",
+                    },
+                )
+                logger.warning("Risk gate blocked %s: %s", symbol, spread_assessment.reason)
+                continue
+            risk_assessment = check_entry_risk(symbol)
+            if not risk_assessment.approved:
+                record_market_scan(
+                    account_id,
+                    {
+                        "symbol": symbol,
+                        "timeframe": asset.timeframe,
+                        "last_price": last_price,
+                        "rsi": current_rsi,
+                        "ema_trend": ema_trend,
+                        "signal_status": "condition_met",
+                        "reason": f"Risk filter: {risk_assessment.reason}",
+                    },
+                )
+                logger.warning("Risk gate blocked %s: %s", symbol, risk_assessment.reason)
+                continue
             if not is_demo_account():
                 record_market_scan(
                     account_id,
@@ -221,10 +281,17 @@ def scan_watchlist(account_id: int, account_auto_trading: bool) -> None:
                 decision = cached_decision[1]
             else:
                 try:
+                    analysis_data = {
+                        **signal.technical_data,
+                        **{
+                            f"risk_{key}": value
+                            for key, value in risk_assessment.context.items()
+                        },
+                    }
                     decision = confirm_entry(
                         symbol,
                         signal.signal_type,
-                        signal.technical_data,
+                        analysis_data,
                         account_id,
                     )
                 except Exception:
@@ -291,6 +358,7 @@ def scan_watchlist(account_id: int, account_auto_trading: bool) -> None:
                     "risk_percent": asset.risk_percent,
                     "ai_confidence": decision["confidence"],
                     "ai_reasoning": decision["reasoning"],
+                    "entry_risk": risk_assessment.context,
                 }
                 open_order(
                     symbol=symbol,
@@ -425,8 +493,17 @@ def process_bot_commands(account_id: int) -> None:
 def wait_for_next_scan(account_id: int) -> None:
     """Keep emergency-command latency low without running market scans continuously."""
     deadline = time.monotonic() + SCAN_INTERVAL_SECONDS
+    next_management = time.monotonic()
     while True:
         process_bot_commands(account_id)
+        if time.monotonic() >= next_management:
+            try:
+                manage_open_positions()
+            except Exception:
+                logger.exception("Could not run periodic position management.")
+            next_management = (
+                time.monotonic() + POSITION_MANAGEMENT_INTERVAL_SECONDS
+            )
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return
@@ -473,6 +550,7 @@ def run() -> None:
                 synchronize_closed_trades()
                 reflect_closed_trades(account_id)
                 process_bot_commands(account_id)
+                manage_open_positions()
                 account_auto_trading = get_auto_trading_setting(account_id)
                 scan_watchlist(account_id, account_auto_trading)
                 wait_for_next_scan(account_id)
