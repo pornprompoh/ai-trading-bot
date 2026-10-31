@@ -17,7 +17,7 @@ export async function fetchAccounts() {
 
   const accountResult = await supabase
     .from('trading_accounts')
-    .select('account_id,login,server,account_type,currency,balance,updated_at')
+    .select('account_id,login,server,account_type,currency,balance,auto_trading,updated_at')
     .in('account_id', accountIds)
     .order('updated_at', { ascending: false })
   const accounts = assertQuery(accountResult, 'Could not load trading accounts') ?? []
@@ -28,7 +28,7 @@ export async function fetchAccounts() {
 }
 
 export async function fetchAccountDashboard(accountId) {
-  const [tradesResult, logsResult, snapshotsResult, metricsResult] = await Promise.all([
+  const [tradesResult, logsResult, snapshotsResult, metricsResult, scansResult, riskResult, exposureResult, commandResult] = await Promise.all([
     supabase
       .from('trades')
       .select(
@@ -58,6 +58,28 @@ export async function fetchAccountDashboard(accountId) {
       )
       .eq('account_id', accountId)
       .maybeSingle(),
+    supabase
+      .from('dashboard_market_scans')
+      .select('symbol,timeframe,last_price,rsi,ema_trend,signal_status,reason,updated_at')
+      .eq('account_id', accountId)
+      .order('symbol'),
+    supabase
+      .from('dashboard_risk_metrics')
+      .select('free_margin,margin_level,daily_drawdown_percent,max_equity_peak,daily_trade_count')
+      .eq('account_id', accountId)
+      .maybeSingle(),
+    supabase
+      .from('dashboard_symbol_exposure')
+      .select('symbol,open_positions,total_volume')
+      .eq('account_id', accountId)
+      .order('symbol'),
+    supabase
+      .from('bot_commands')
+      .select('command_id,command_type,status,result,created_at,processed_at')
+      .eq('account_id', accountId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ])
 
   const trades = (assertQuery(tradesResult, 'Could not load trades') ?? []).map((trade) => ({
@@ -81,11 +103,19 @@ export async function fetchAccountDashboard(accountId) {
   }))
   const snapshots = assertQuery(snapshotsResult, 'Could not load equity history') ?? []
   const metrics = assertQuery(metricsResult, 'Could not load trade metrics')
+  const scans = assertQuery(scansResult, 'Could not load live market scans') ?? []
+  const riskMetrics = assertQuery(riskResult, 'Could not load account risk metrics')
+  const exposure = assertQuery(exposureResult, 'Could not load symbol exposure') ?? []
+  const latestCommand = assertQuery(commandResult, 'Could not load emergency command status')
 
   return {
     trades,
     aiLogs,
     snapshots: snapshots.reverse(),
+    scans,
+    riskMetrics,
+    exposure,
+    latestCommand,
     metrics: metrics ?? {
       total_trades: 0,
       closed_trades: 0,
@@ -96,4 +126,21 @@ export async function fetchAccountDashboard(accountId) {
       gross_loss: 0,
     },
   }
+}
+
+export async function updateAutoTrading(accountId, enabled) {
+  const result = await supabase
+    .from('trading_accounts')
+    .update({ auto_trading: enabled })
+    .eq('account_id', accountId)
+    .select('account_id,auto_trading')
+    .single()
+  return assertQuery(result, 'Could not update auto-trading setting')
+}
+
+export async function requestEmergencyCloseAll(accountId) {
+  const result = await supabase.rpc('request_emergency_close_all', {
+    target_account_id: accountId,
+  })
+  return assertQuery(result, 'Could not queue emergency close command')
 }

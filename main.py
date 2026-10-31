@@ -16,23 +16,28 @@ from config.settings import (
 )
 from engine.ai_analyst import AIDecision, confirm_entry
 from database.db_manager import (
+    get_auto_trading_setting,
+    get_pending_bot_commands,
     get_open_trade_tickets,
     record_account_snapshot,
+    record_market_scan,
     record_trade_close,
     sync_account,
+    update_bot_command,
 )
 from engine.mt5_connector import (
     ensure_connected,
     get_account_status,
     get_closed_deal,
+    get_last_price,
     get_ohlcv,
     get_symbol_point,
     has_open_position,
     is_demo_account,
     shutdown,
 )
-from engine.order_executor import calculate_lot_size, open_order
-from engine.strategy import detect_signal
+from engine.order_executor import calculate_lot_size, close_all_positions, open_order
+from engine.strategy import calculate_indicators, detect_signal
 
 logger = logging.getLogger("trading_engine")
 _processed_signal_candles: dict[str, str] = {}
@@ -40,6 +45,7 @@ _ai_retry_state: dict[str, tuple[str, float, int]] = {}
 _ai_decision_cache: dict[str, tuple[str, AIDecision]] = {}
 _last_snapshot_at = 0.0
 ACCOUNT_SNAPSHOT_INTERVAL_SECONDS = 300
+COMMAND_POLL_INTERVAL_SECONDS = 5
 
 
 def configure_logging() -> None:
@@ -61,17 +67,86 @@ def configure_logging() -> None:
     )
 
 
-def scan_watchlist() -> None:
+def _scanner_reason(
+    ema_trend: str,
+    rsi: float | None,
+    previous_rsi: float | None,
+) -> str:
+    if ema_trend == "bullish":
+        if rsi is not None and rsi >= 45:
+            return f"RSI neutral ({rsi:.1f}); waiting for pullback"
+        return "Waiting for RSI to turn upward"
+    if ema_trend == "bearish":
+        if rsi is not None and rsi <= 55:
+            return f"RSI neutral ({rsi:.1f}); waiting for a bounce"
+        return "Waiting for RSI to turn downward"
+    if rsi is not None and previous_rsi is not None:
+        return f"EMA trend mixed; RSI {rsi:.1f}"
+    return "Waiting for enough completed candles"
+
+
+def scan_watchlist(account_id: int, account_auto_trading: bool) -> None:
     """Analyze completed candles, request AI confirmation, and trade if enabled."""
     for symbol, asset in WATCHLIST.items():
         try:
-            if has_open_position(symbol):
-                logger.info("Skipping %s: an MT5 position is already open.", symbol)
-                continue
-
             bars = get_ohlcv(symbol, asset.timeframe, n_bars=300)
             completed_bars = bars.iloc[:-1]
+            indicator_frame = calculate_indicators(completed_bars)
+            current = indicator_frame.iloc[-1] if not indicator_frame.empty else None
+            previous = indicator_frame.iloc[-2] if len(indicator_frame) > 1 else None
+            current_rsi = (
+                float(current["rsi_14"])
+                if current is not None and current["rsi_14"] == current["rsi_14"]
+                else None
+            )
+            previous_rsi = (
+                float(previous["rsi_14"])
+                if previous is not None and previous["rsi_14"] == previous["rsi_14"]
+                else None
+            )
+            last_price = get_last_price(symbol)
+            ema_trend = (
+                "bullish"
+                if current is not None
+                and last_price > current["ema_50"]
+                and last_price > current["ema_200"]
+                else "bearish"
+                if current is not None
+                and last_price < current["ema_50"]
+                and last_price < current["ema_200"]
+                else "mixed"
+            )
             signal = detect_signal(completed_bars, point=get_symbol_point(symbol))
+            position_open = has_open_position(symbol)
+            signal_status = (
+                "position_open"
+                if position_open
+                else "condition_met"
+                if signal.signal_type != "NONE"
+                else "no_signal"
+            )
+            reason = (
+                "Position already open"
+                if position_open
+                else "Entry conditions met; awaiting AI review"
+                if signal.signal_type != "NONE"
+                else _scanner_reason(ema_trend, current_rsi, previous_rsi)
+            )
+            record_market_scan(
+                account_id,
+                {
+                    "symbol": symbol,
+                    "timeframe": asset.timeframe,
+                    "last_price": last_price,
+                    "rsi": current_rsi,
+                    "ema_trend": ema_trend,
+                    "signal_status": signal_status,
+                    "reason": reason,
+                },
+            )
+            if position_open:
+                logger.info("Skipping %s: an MT5 position is already open.", symbol)
+                continue
             if signal.signal_type == "NONE":
                 logger.info("%s %s: no entry signal.", symbol, asset.timeframe)
                 continue
@@ -85,6 +160,42 @@ def scan_watchlist() -> None:
                 or signal.tp_points is None
             ):
                 raise RuntimeError(f"Strategy returned incomplete signal data for {symbol}.")
+            if not is_demo_account():
+                record_market_scan(
+                    account_id,
+                    {
+                        "symbol": symbol,
+                        "timeframe": asset.timeframe,
+                        "last_price": last_price,
+                        "rsi": current_rsi,
+                        "ema_trend": ema_trend,
+                        "signal_status": "condition_met",
+                        "reason": "Signal detected; automated trading is Demo-only",
+                    },
+                )
+                _processed_signal_candles[symbol] = signal.candle_time
+                _ai_decision_cache.pop(symbol, None)
+                continue
+            if not AUTO_TRADING_ENABLED or not account_auto_trading:
+                record_market_scan(
+                    account_id,
+                    {
+                        "symbol": symbol,
+                        "timeframe": asset.timeframe,
+                        "last_price": last_price,
+                        "rsi": current_rsi,
+                        "ema_trend": ema_trend,
+                        "signal_status": "condition_met",
+                        "reason": (
+                            "Engine trading gate is disabled"
+                            if not AUTO_TRADING_ENABLED
+                            else "Auto-trading is disabled in Dashboard"
+                        ),
+                    },
+                )
+                _processed_signal_candles[symbol] = signal.candle_time
+                _ai_decision_cache.pop(symbol, None)
+                continue
             if _processed_signal_candles.get(symbol) == signal.candle_time:
                 continue
             retry_state = _ai_retry_state.get(symbol)
@@ -128,6 +239,18 @@ def scan_watchlist() -> None:
                         symbol,
                         delay,
                     )
+                    record_market_scan(
+                        account_id,
+                        {
+                            "symbol": symbol,
+                            "timeframe": asset.timeframe,
+                            "last_price": last_price,
+                            "rsi": current_rsi,
+                            "ema_trend": ema_trend,
+                            "signal_status": "unavailable",
+                            "reason": f"Gemini unavailable; retry in {delay}s",
+                        },
+                    )
                     continue
                 _ai_retry_state.pop(symbol, None)
                 _ai_decision_cache[symbol] = (signal.candle_time, decision)
@@ -140,20 +263,18 @@ def scan_watchlist() -> None:
                 decision["reasoning"],
             )
             if not decision["approved"]:
-                _processed_signal_candles[symbol] = signal.candle_time
-                _ai_decision_cache.pop(symbol, None)
-                continue
-            if not AUTO_TRADING_ENABLED:
-                logger.warning(
-                    "AI approved %s %s, but order sending is disabled.",
-                    symbol,
-                    signal.signal_type,
+                record_market_scan(
+                    account_id,
+                    {
+                        "symbol": symbol,
+                        "timeframe": asset.timeframe,
+                        "last_price": last_price,
+                        "rsi": current_rsi,
+                        "ema_trend": ema_trend,
+                        "signal_status": "rejected",
+                        "reason": f"Gemini rejected entry: {decision['reasoning']}",
+                    },
                 )
-                _processed_signal_candles[symbol] = signal.candle_time
-                _ai_decision_cache.pop(symbol, None)
-                continue
-            if not is_demo_account():
-                logger.error("Refusing to trade %s: connected MT5 account is not a demo.", symbol)
                 _processed_signal_candles[symbol] = signal.candle_time
                 _ai_decision_cache.pop(symbol, None)
                 continue
@@ -179,6 +300,18 @@ def scan_watchlist() -> None:
                     context=context,
                 )
             except ValueError:
+                record_market_scan(
+                    account_id,
+                    {
+                        "symbol": symbol,
+                        "timeframe": asset.timeframe,
+                        "last_price": last_price,
+                        "rsi": current_rsi,
+                        "ema_trend": ema_trend,
+                        "signal_status": "condition_met",
+                        "reason": "Signal blocked by risk or broker constraints",
+                    },
+                )
                 _processed_signal_candles[symbol] = signal.candle_time
                 _ai_decision_cache.pop(symbol, None)
                 logger.exception("Signal for %s cannot be safely traded.", symbol)
@@ -200,11 +333,50 @@ def scan_watchlist() -> None:
                     symbol,
                     delay,
                 )
+                record_market_scan(
+                    account_id,
+                    {
+                        "symbol": symbol,
+                        "timeframe": asset.timeframe,
+                        "last_price": last_price,
+                        "rsi": current_rsi,
+                        "ema_trend": ema_trend,
+                        "signal_status": "unavailable",
+                        "reason": f"Order handling failed; retry in {delay}s",
+                    },
+                )
                 continue
+            record_market_scan(
+                account_id,
+                {
+                    "symbol": symbol,
+                    "timeframe": asset.timeframe,
+                    "last_price": last_price,
+                    "rsi": current_rsi,
+                    "ema_trend": ema_trend,
+                    "signal_status": "position_open",
+                    "reason": f"{signal.signal_type} order opened",
+                },
+            )
             _processed_signal_candles[symbol] = signal.candle_time
             _ai_decision_cache.pop(symbol, None)
         except Exception:
             logger.exception("Market analysis or trade execution failed for %s.", symbol)
+            try:
+                record_market_scan(
+                    account_id,
+                    {
+                        "symbol": symbol,
+                        "timeframe": asset.timeframe,
+                        "last_price": None,
+                        "rsi": None,
+                        "ema_trend": "unknown",
+                        "signal_status": "unavailable",
+                        "reason": "Market data or analysis unavailable",
+                    },
+                )
+            except Exception:
+                logger.exception("Could not save scanner error state for %s.", symbol)
 
 
 def synchronize_closed_trades() -> None:
@@ -222,6 +394,40 @@ def synchronize_closed_trades() -> None:
             )
         except Exception:
             logger.exception("Could not synchronize closed position %s.", ticket)
+
+
+def process_bot_commands(account_id: int) -> None:
+    """Run queued dashboard controls on the MT5-owning engine process."""
+    for command in get_pending_bot_commands(account_id):
+        command_id = int(command["command_id"])
+        try:
+            update_bot_command(command_id, "processing", "Emergency close requested")
+            if command["command_type"] != "close_all":
+                raise ValueError(f"Unsupported bot command: {command['command_type']}")
+            closed_count = close_all_positions()
+            synchronize_closed_trades()
+            update_bot_command(
+                command_id,
+                "completed",
+                f"Closed {closed_count} MT5 position(s); auto-trading remains disabled.",
+            )
+        except Exception as exc:
+            logger.exception("Dashboard bot command %s failed.", command_id)
+            try:
+                update_bot_command(command_id, "failed", str(exc)[:1000])
+            except Exception:
+                logger.exception("Could not persist failure state for command %s.", command_id)
+
+
+def wait_for_next_scan(account_id: int) -> None:
+    """Keep emergency-command latency low without running market scans continuously."""
+    deadline = time.monotonic() + SCAN_INTERVAL_SECONDS
+    while True:
+        process_bot_commands(account_id)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(COMMAND_POLL_INTERVAL_SECONDS, remaining))
 
 
 def run() -> None:
@@ -242,6 +448,7 @@ def run() -> None:
                     str(account["account_type"]),
                     str(account["currency"]),
                 )
+                account_auto_trading = get_auto_trading_setting(account_id)
                 if (
                     not _last_snapshot_at
                     or time.monotonic() - _last_snapshot_at
@@ -252,15 +459,19 @@ def run() -> None:
                 if not connected_logged:
                     logger.info(
                         "Engine active for account %s (DB account_id=%s, demo=%s, "
-                        "auto_trading=%s).",
+                        "env_auto_trading=%s, account_auto_trading=%s).",
                         account["login"],
                         account_id,
                         is_demo_account(),
                         AUTO_TRADING_ENABLED,
+                        account_auto_trading,
                     )
                     connected_logged = True
                 synchronize_closed_trades()
-                scan_watchlist()
+                process_bot_commands(account_id)
+                account_auto_trading = get_auto_trading_setting(account_id)
+                scan_watchlist(account_id, account_auto_trading)
+                wait_for_next_scan(account_id)
                 retry_delay = 2
             except Exception:
                 logger.exception("Engine cycle failed; retrying in %s seconds.", retry_delay)
@@ -268,7 +479,6 @@ def run() -> None:
                 time.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, MAX_RECONNECT_DELAY_SECONDS)
                 continue
-            time.sleep(SCAN_INTERVAL_SECONDS)
     except KeyboardInterrupt:
         logger.info("Shutdown requested.")
     finally:

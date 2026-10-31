@@ -18,6 +18,9 @@ import { fetchAccountDashboard, fetchAccounts } from '../lib/dashboardData'
 import { money } from '../lib/format'
 import { supabase } from '../lib/supabase'
 import AiLogFeed from '../components/AiLogFeed'
+import BotControls from '../components/BotControls'
+import LiveMarketScanner from '../components/LiveMarketScanner'
+import RiskMetrics from '../components/RiskMetrics'
 import SummaryCards from '../components/SummaryCards'
 import TradesTable from '../components/TradesTable'
 
@@ -439,34 +442,57 @@ export default function Dashboard({ session }) {
                   <Suspense fallback={<LoadingPanel message="Loading account chart…" />}>
                     <EquityChart snapshots={dashboard.snapshots} />
                   </Suspense>
-                  <section className="rounded-2xl border border-[#202c32] bg-[#10171b] p-5">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-[#334338] bg-[#19251d] text-[#b6f36b]">
-                        <Wallet size={16} />
-                      </span>
-                      <div>
-                        <h2 className="text-sm font-semibold text-[#e8efec]">Account details</h2>
-                        <p className="mt-0.5 text-[10px] text-[#718186]">Live MT5 snapshot</p>
+                  <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+                    <section className="rounded-2xl border border-[#202c32] bg-[#10171b] p-5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-[#334338] bg-[#19251d] text-[#b6f36b]">
+                            <Wallet size={16} />
+                          </span>
+                          <div>
+                            <h2 className="text-sm font-semibold text-[#e8efec]">Account details</h2>
+                            <p className="mt-0.5 text-[10px] text-[#718186]">Live MT5 snapshot</p>
+                          </div>
+                        </div>
+                        <span className="rounded-full border border-[#2a373d] bg-[#172126] px-2 py-1 text-[9px] font-semibold text-[#a6b3b0]">
+                          {account.account_type.toUpperCase()}
+                        </span>
                       </div>
-                    </div>
-                    <span className="rounded-full border border-[#2a373d] bg-[#172126] px-2 py-1 text-[9px] font-semibold text-[#a6b3b0]">
-                      {account.server.includes('Demo') ? 'DEMO' : 'CONNECTED'}
-                    </span>
+                      <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <DetailRow label="Account login" value={`#${account.login}`} />
+                        <DetailRow label="Server" value={serverLabel} />
+                        <DetailRow label="Account type" value={account.account_type} />
+                        <DetailRow label="Currency" value={account.currency} />
+                        <DetailRow
+                          label="Floating P&L"
+                          value={equity == null ? '—' : `${floatingPnl >= 0 ? '+' : ''}${money(floatingPnl)}`}
+                          tone={floatingPnl >= 0 ? 'positive' : 'negative'}
+                        />
+                        <DetailRow label="Last heartbeat" value={shortTime(latestSnapshot?.recorded_at)} />
+                      </div>
+                      <div className="mt-5 flex items-start gap-2 rounded-xl border border-[#28373a] bg-[#121b1d] p-3 text-[10px] leading-5 text-[#8d9b9d]">
+                        <Bot className="mt-0.5 shrink-0 text-[#9acb6a]" size={14} />
+                        <p>Account history is sampled by the trading engine every five minutes and refreshed here every 30 seconds.</p>
+                      </div>
+                    </section>
+                    <RiskMetrics
+                      exposure={dashboard.exposure}
+                      riskMetrics={dashboard.riskMetrics}
+                    />
                   </div>
-                  <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    <DetailRow label="Account login" value={`#${account.login}`} />
-                    <DetailRow label="Server" value={serverLabel} />
-                    <DetailRow label="Account type" value={account.account_type} />
-                    <DetailRow label="Currency" value={account.currency} />
-                    <DetailRow label="Floating P&L" value={equity == null ? '—' : `${floatingPnl >= 0 ? '+' : ''}${money(floatingPnl)}`} tone={floatingPnl >= 0 ? 'positive' : 'negative'} />
-                    <DetailRow label="Last heartbeat" value={shortTime(latestSnapshot?.recorded_at)} />
-                  </div>
-                  <div className="mt-5 flex items-start gap-2 rounded-xl border border-[#28373a] bg-[#121b1d] p-3 text-[10px] leading-5 text-[#8d9b9d]">
-                    <Bot className="mt-0.5 shrink-0 text-[#9acb6a]" size={14} />
-                    <p>Account history is sampled by the trading engine every five minutes and refreshed here every 30 seconds.</p>
-                  </div>
-                  </section>
+                  <LiveMarketScanner now={now} scans={dashboard.scans} />
+                  <BotControls
+                    account={account}
+                    latestCommand={dashboard.latestCommand}
+                    onAccountUpdated={(updated) => {
+                      setAccounts((current) => current.map((item) => (
+                        item.account_id === String(updated.account_id)
+                          ? { ...item, auto_trading: updated.auto_trading }
+                          : item
+                      )))
+                    }}
+                    onRefresh={refresh}
+                  />
                 </div>
               )}
               {activeTab === 'trades' && <TradesTable trades={dashboard.trades} />}
@@ -476,7 +502,7 @@ export default function Dashboard({ session }) {
 
           <footer className="mt-8 flex flex-wrap items-center justify-between gap-2 border-t border-[#1c272c] pt-4 text-[9px] text-[#68777b]">
             <span className="flex items-center gap-1.5"><Command size={11} /> NORTHSTAR · PRIVATE TRADING WORKSPACE</span>
-            <span className="flex items-center gap-1.5"><SlidersHorizontal size={11} /> Read-only dashboard · Auto-refresh 30s</span>
+            <span className="flex items-center gap-1.5"><SlidersHorizontal size={11} /> Authenticated controls · Auto-refresh 30s</span>
           </footer>
         </div>
       </main>

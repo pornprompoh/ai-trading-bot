@@ -89,6 +89,21 @@ def get_symbol_point(symbol: str) -> float:
     return float(info.point)
 
 
+def get_last_price(symbol: str) -> float:
+    """Return a live MT5 quote, preferring last-traded price where available."""
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        code, message = mt5.last_error()
+        raise RuntimeError(f"Could not read live quote for {symbol} (code={code}): {message}")
+    last = float(tick.last)
+    bid = float(tick.bid)
+    ask = float(tick.ask)
+    price = last if last > 0 else (bid + ask) / 2 if bid > 0 and ask > 0 else max(bid, ask)
+    if price <= 0:
+        raise RuntimeError(f"MT5 returned an invalid live quote for {symbol}.")
+    return price
+
+
 def is_demo_account() -> bool:
     """Fail closed unless the currently connected MT5 account is a demo account."""
     account = mt5.account_info()

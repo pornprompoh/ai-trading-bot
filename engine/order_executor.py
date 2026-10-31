@@ -11,7 +11,11 @@ from typing import Any, Mapping
 import MetaTrader5 as mt5
 
 from config.settings import AUTO_TRADING_ENABLED, DEMO_ACCOUNT_ONLY
-from database.db_manager import record_trade_open, sync_account
+from database.db_manager import (
+    get_auto_trading_setting,
+    record_trade_open,
+    sync_account,
+)
 from engine.mt5_connector import get_account_status, is_demo_account
 
 logger = logging.getLogger(__name__)
@@ -133,6 +137,8 @@ def open_order(
         str(account["account_type"]),
         str(account["currency"]),
     )
+    if not get_auto_trading_setting(account_id):
+        raise RuntimeError("Account auto-trading is disabled in dashboard controls.")
     result = mt5.order_send(request)
     if result is None:
         code, message = mt5.last_error()
@@ -180,3 +186,82 @@ def open_order(
         trade_id,
     )
     return {"trade_id": trade_id, "ticket": int(result.order), "volume": actual_volume}
+
+
+def close_all_positions() -> int:
+    """Close every position on the connected demo account, failing if any remain."""
+    if not DEMO_ACCOUNT_ONLY or not is_demo_account():
+        raise RuntimeError("Emergency close is restricted to MT5 demo accounts.")
+
+    positions = mt5.positions_get()
+    if positions is None:
+        code, message = mt5.last_error()
+        raise RuntimeError(f"Could not list MT5 positions (code={code}): {message}")
+
+    closed_count = 0
+    failures: list[str] = []
+    for position in positions:
+        info = mt5.symbol_info(position.symbol)
+        tick = mt5.symbol_info_tick(position.symbol)
+        if info is None or tick is None:
+            code, message = mt5.last_error()
+            failures.append(
+                f"ticket {position.ticket}: missing market data (code={code}): {message}"
+            )
+            continue
+
+        is_buy_position = int(position.type) == mt5.POSITION_TYPE_BUY
+        filling_mode = (
+            mt5.ORDER_FILLING_IOC
+            if int(info.filling_mode) & 2
+            else mt5.ORDER_FILLING_FOK
+            if int(info.filling_mode) & 1
+            else mt5.ORDER_FILLING_RETURN
+        )
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": position.symbol,
+            "volume": float(position.volume),
+            "type": mt5.ORDER_TYPE_SELL if is_buy_position else mt5.ORDER_TYPE_BUY,
+            "position": int(position.ticket),
+            "price": float(tick.bid if is_buy_position else tick.ask),
+            "deviation": 30,
+            "magic": MAGIC_NUMBER,
+            "comment": "EmergencyCloseAll",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": filling_mode,
+        }
+        if request["price"] <= 0:
+            failures.append(f"ticket {position.ticket}: invalid close quote")
+            continue
+        result = mt5.order_send(request)
+        if result is None:
+            code, message = mt5.last_error()
+            failures.append(
+                f"ticket {position.ticket}: no result (code={code}): {message}"
+            )
+        elif result.retcode not in {
+            mt5.TRADE_RETCODE_DONE,
+            mt5.TRADE_RETCODE_DONE_PARTIAL,
+        }:
+            failures.append(
+                f"ticket {position.ticket}: retcode={result.retcode} "
+                f"comment={result.comment}"
+            )
+        else:
+            closed_count += 1
+
+    remaining = mt5.positions_get()
+    if remaining is None:
+        code, message = mt5.last_error()
+        failures.append(f"Could not verify remaining positions (code={code}): {message}")
+    elif remaining:
+        failures.append(
+            "Positions remain open: "
+            + ", ".join(str(position.ticket) for position in remaining)
+        )
+    if failures:
+        raise RuntimeError("Emergency close incomplete: " + "; ".join(failures))
+
+    logger.warning("Emergency close completed; closed %s MT5 positions.", closed_count)
+    return closed_count

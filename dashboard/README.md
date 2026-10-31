@@ -19,9 +19,12 @@ in with that user's email and password.
 
 ## Supabase setup
 
-1. Run the repository's `database/schema.sql` in the Supabase SQL Editor. It
-   creates the equity-snapshot and account-access tables, a metrics view, and
-   RLS policies scoped to each authenticated user's assigned accounts.
+1. For an existing installation, run
+   `database/dashboard_controls_migration.sql` in the Supabase SQL Editor
+   before deploying the updated bot or dashboard. For a new installation,
+   `database/schema.sql` contains the complete schema. The migration adds
+   scanner state, risk metrics, an account-level auto-trading gate, and an
+   authenticated emergency-command queue with RLS.
 2. Grant the Auth user access to the intended trading account. Find the
    account's BIGINT `account_id` in `trading_accounts` and the user's UUID in
    Supabase Auth, then run:
@@ -40,9 +43,12 @@ in with that user's email and password.
 3. Keep the existing backend `.env` key server-side (service-role key). The
    frontend uses only the Supabase publishable/anon key; never enable public
    read policies for trading data.
-4. Restart the Python bot after applying the schema. It records balance/equity
-   snapshots every five minutes; the chart and bot heartbeat become available
-   after snapshots start arriving.
+4. Restart the Python bot after applying the schema. The scanner updates each
+   watched symbol every engine cycle; account margin/equity snapshots are saved
+   every five minutes. Auto-trading requires both the account switch and
+   `AUTO_TRADING_ENABLED=true` in the server-side `.env`; it remains Demo-only.
+   Emergency close commands are queued for the engine and are accepted only
+   when its connected MT5 account is Demo. The browser never sends MT5 orders.
 
 The UI refreshes every 30 seconds. Metrics are aggregated by the
 `dashboard_trade_metrics` security-invoker view, while the trades and decision

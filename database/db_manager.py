@@ -77,20 +77,120 @@ def sync_account(
         raise
 
 
+def get_auto_trading_setting(account_id: int) -> bool:
+    """Read the account-level trading switch; fail closed if the row is missing."""
+    try:
+        response = (
+            get_supabase_client()
+            .table("trading_accounts")
+            .select("auto_trading")
+            .eq("account_id", account_id)
+            .single()
+            .execute()
+        )
+        row = _first_row(response.data, "auto-trading setting lookup")
+        return row.get("auto_trading") is True
+    except Exception:
+        logger.exception("Could not read auto-trading setting for account %s.", account_id)
+        raise
+
+
 def record_account_snapshot(account_id: int, account_status: Mapping[str, Any]) -> None:
     """Persist a balance/equity sample for dashboard history."""
     snapshot = {
         "account_id": account_id,
         "balance": float(account_status["balance"]),
         "equity": float(account_status["equity"]),
+        "margin": float(account_status["margin"]),
+        "free_margin": float(account_status["free_margin"]),
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
-    if any(snapshot[key] < 0 for key in ("balance", "equity")):
-        raise ValueError("Account snapshot values cannot be negative.")
+    if snapshot["margin"] < 0:
+        raise ValueError("Account margin cannot be negative.")
     try:
         get_supabase_client().table("account_equity_snapshots").insert(snapshot).execute()
     except Exception:
         logger.exception("Could not record account snapshot for account %s.", account_id)
+        raise
+
+
+def record_market_scan(account_id: int, scan: Mapping[str, Any]) -> None:
+    """Upsert the latest market scan row for one account/symbol pair."""
+    required = {
+        "symbol",
+        "timeframe",
+        "last_price",
+        "rsi",
+        "ema_trend",
+        "signal_status",
+        "reason",
+    }
+    if required.difference(scan):
+        raise ValueError("Market scan is missing required fields.")
+    values = {
+        "account_id": account_id,
+        **dict(scan),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        (
+            get_supabase_client()
+            .table("dashboard_market_scans")
+            .upsert(values, on_conflict="account_id,symbol")
+            .execute()
+        )
+    except Exception:
+        logger.exception(
+            "Could not record market scan for account %s symbol %s.",
+            account_id,
+            scan.get("symbol"),
+        )
+        raise
+
+
+def get_pending_bot_commands(account_id: int) -> list[dict[str, Any]]:
+    """Load queued commands for this engine account."""
+    try:
+        response = (
+            get_supabase_client()
+            .table("bot_commands")
+            .select("command_id,command_type,account_id")
+            .eq("account_id", account_id)
+            .eq("status", "queued")
+            .order("created_at")
+            .execute()
+        )
+        return [dict(row) for row in response.data or []]
+    except Exception:
+        logger.exception("Could not load queued commands for account %s.", account_id)
+        raise
+
+
+def update_bot_command(
+    command_id: int,
+    status: str,
+    result: str | None = None,
+) -> None:
+    """Record command progress and its final outcome."""
+    if status not in {"processing", "completed", "failed"}:
+        raise ValueError("Invalid bot command status.")
+    values: dict[str, Any] = {"status": status, "result": result}
+    if status in {"completed", "failed"}:
+        values["processed_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        response = (
+            get_supabase_client()
+            .table("bot_commands")
+            .update(values)
+            .eq("command_id", command_id)
+            .eq("status", "queued" if status == "processing" else "processing")
+            .select("command_id")
+            .execute()
+        )
+        if not response.data:
+            raise RuntimeError(f"Bot command {command_id} changed state before update.")
+    except Exception:
+        logger.exception("Could not update bot command %s to %s.", command_id, status)
         raise
 
 

@@ -47,8 +47,8 @@ class AssetConfig:
 
 WATCHLIST: dict[str, AssetConfig] = {
     "XAUUSD.iux": AssetConfig(timeframe="M15", risk_percent=1.0),
-    "EURUSD.iux": AssetConfig(timeframe="H1", risk_percent=1.5),
-    "USDJPY.iux": AssetConfig(timeframe="H1", risk_percent=1.5),
+    "EURUSD.iux": AssetConfig(timeframe="M15", risk_percent=1.5),
+    "USDJPY.iux": AssetConfig(timeframe="M15", risk_percent=1.5),
 }
 
 SCAN_INTERVAL_SECONDS = 60
