@@ -30,35 +30,55 @@ function shortTime(value) {
   return new Date(value).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 }
 
-function Navigation({ openTrades }) {
-  const links = [
-    { href: '#overview', label: 'Overview', icon: PanelTop, selected: true },
-    { href: '#trade-activity', label: 'Trade activity', icon: Activity, count: openTrades },
-    { href: '#ai-insights', label: 'AI insights', icon: Sparkles },
-  ]
+const NAV_ITEMS = [
+  { id: 'overview', label: 'Overview', icon: PanelTop },
+  { id: 'trades', label: 'Trade activity', icon: Activity },
+  { id: 'ai', label: 'AI insights', icon: Sparkles },
+]
 
+function Navigation({ activeTab, openTrades, onSelect, horizontal = false }) {
   return (
-    <nav aria-label="Main navigation" className="space-y-1">
-      <p className="px-3 pb-2 pt-5 text-[9px] font-bold tracking-[0.18em] text-[#657479]">WORKSPACE</p>
-      {links.map(({ href, label, icon: Icon, selected, count }) => (
-        <a
-          className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 text-xs transition ${
-            selected
-              ? 'border border-[#344338] bg-[#19251d] font-semibold text-[#c8f19a]'
-              : 'text-[#89979a] hover:bg-[#141d21] hover:text-[#e3ece8]'
-          }`}
-          href={href}
-          key={href}
-        >
-          <Icon className={selected ? 'text-[#b6f36b]' : 'text-[#718186] group-hover:text-[#b6f36b]'} size={16} />
-          <span>{label}</span>
-          {count > 0 && (
-            <span className="mono ml-auto rounded-md bg-[#202b2e] px-1.5 py-0.5 text-[9px] text-[#9caaaa]">
-              {count}
-            </span>
-          )}
-        </a>
-      ))}
+    <nav
+      aria-label="Main navigation"
+      className={horizontal ? 'flex overflow-x-auto border-b border-[#202c32]' : 'space-y-1'}
+    >
+      {!horizontal && (
+        <p className="px-3 pb-2 pt-5 text-[9px] font-bold tracking-[0.18em] text-[#657479]">
+          WORKSPACE
+        </p>
+      )}
+      {NAV_ITEMS.map(({ id, label, icon: Icon }) => {
+        const selected = activeTab === id
+        return (
+          <button
+            aria-current={selected ? 'page' : undefined}
+            className={
+              horizontal
+                ? `relative flex shrink-0 items-center gap-2 px-4 py-3 text-xs transition ${
+                    selected
+                      ? 'font-semibold text-[#c8f19a] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:rounded-full after:bg-[#b6f36b]'
+                      : 'text-[#89979a] hover:text-[#e3ece8]'
+                  }`
+                : `group relative flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-xs transition ${
+                    selected
+                      ? 'bg-[#19251d] font-semibold text-[#c8f19a] before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-[#b6f36b]'
+                      : 'text-[#89979a] hover:bg-[#141d21] hover:text-[#e3ece8]'
+                  }`
+            }
+            key={id}
+            onClick={() => onSelect(id)}
+            type="button"
+          >
+            <Icon className={selected ? 'text-[#b6f36b]' : 'text-[#718186] group-hover:text-[#b6f36b]'} size={16} />
+            <span>{label}</span>
+            {id === 'trades' && openTrades > 0 && (
+              <span className="mono ml-auto rounded-md bg-[#202b2e] px-1.5 py-0.5 text-[9px] text-[#9caaaa]">
+                {openTrades}
+              </span>
+            )}
+          </button>
+        )
+      })}
     </nav>
   )
 }
@@ -142,6 +162,7 @@ function LoadingPanel({ message = 'Loading account data…' }) {
 }
 
 export default function Dashboard({ session }) {
+  const [activeTab, setActiveTab] = useState('overview')
   const [accounts, setAccounts] = useState([])
   const [accountId, setAccountId] = useState('')
   const [dashboard, setDashboard] = useState(null)
@@ -150,6 +171,11 @@ export default function Dashboard({ session }) {
   const [error, setError] = useState('')
   const [lastUpdated, setLastUpdated] = useState(null)
   const [now, setNow] = useState(null)
+
+  function selectTab(tab) {
+    setActiveTab(tab)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
 
   useEffect(() => {
     const updateClock = () => setNow(new Date())
@@ -236,6 +262,7 @@ export default function Dashboard({ session }) {
     now &&
     now.getTime() - new Date(latestSnapshot.recorded_at).getTime() < BOT_ACTIVE_WITHIN_MS
   const openTrades = Number(metrics?.open_trades) || 0
+  const activePage = NAV_ITEMS.find((item) => item.id === activeTab) ?? NAV_ITEMS[0]
 
   const serverLabel = useMemo(() => account?.server ?? 'No trading account', [account])
 
@@ -245,7 +272,11 @@ export default function Dashboard({ session }) {
     <div className="min-h-screen">
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-[224px] flex-col border-r border-[#1e292f] bg-[#0c1115] px-4 py-5 lg:flex">
         <Brand />
-        <Navigation openTrades={openTrades} />
+        <Navigation
+          activeTab={activeTab}
+          onSelect={selectTab}
+          openTrades={openTrades}
+        />
         <div className="mt-auto">
           <div className="rounded-xl border border-[#27343a] bg-[#11191d] p-3">
             <div className="flex items-center gap-2">
@@ -279,7 +310,7 @@ export default function Dashboard({ session }) {
                 <Activity size={16} />
               </span>
               <div className="min-w-0">
-                <p className="truncate text-[11px] font-semibold text-[#d5dfdc]">Trading overview</p>
+                <p className="truncate text-[11px] font-semibold text-[#d5dfdc]">{activePage.label}</p>
                 <p className="hidden text-[9px] text-[#69797e] sm:block">Monitor account and AI execution context</p>
               </div>
               <span className="hidden h-4 w-px bg-[#29343a] sm:block" />
@@ -338,11 +369,19 @@ export default function Dashboard({ session }) {
         </header>
 
         <div className="mx-auto max-w-[1500px] px-4 pb-10 pt-6 sm:px-7 sm:pt-8 xl:px-9">
+          <div className="mb-5 lg:hidden">
+            <Navigation
+              activeTab={activeTab}
+              horizontal
+              onSelect={selectTab}
+              openTrades={openTrades}
+            />
+          </div>
           <div className="mb-5 flex items-end justify-between gap-4">
             <div>
               <p className="text-[9px] font-bold tracking-[0.2em] text-[#789078]">LIVE ACCOUNT MONITOR</p>
               <h1 className="mt-2 text-[25px] font-semibold tracking-[-0.05em] text-[#f0f5f2] sm:text-[30px]">
-                Good evening<span className="text-[#b6f36b]">.</span>
+                {activePage.label}<span className="text-[#b6f36b]">.</span>
               </h1>
             </div>
             <div className="hidden items-center gap-2 pb-1 text-[10px] text-[#768589] sm:flex">
@@ -386,26 +425,21 @@ export default function Dashboard({ session }) {
             <LoadingPanel message="Fetching protected trading data…" />
           ) : (
             <>
-              <div id="overview">
-                <AccountOverview
-                  account={account}
-                  active={Boolean(botActive)}
-                  equity={equity}
-                  lastHeartbeat={latestSnapshot?.recorded_at}
-                  pnl={totalPnl}
-                  pnlPercent={totalPnlPercent}
-                />
-              </div>
-
-              <div className="mt-4">
-                <SummaryCards account={account} equity={equity} metrics={metrics} />
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 gap-4 2xl:grid-cols-[minmax(0,1.65fr)_minmax(330px,0.85fr)]">
-                <Suspense fallback={<LoadingPanel message="Loading account chart…" />}>
-                  <EquityChart snapshots={dashboard.snapshots} />
-                </Suspense>
-                <div className="rounded-2xl border border-[#202c32] bg-[#10171b] p-5">
+              {activeTab === 'overview' && (
+                <div className="space-y-4">
+                  <AccountOverview
+                    account={account}
+                    active={Boolean(botActive)}
+                    equity={equity}
+                    lastHeartbeat={latestSnapshot?.recorded_at}
+                    pnl={totalPnl}
+                    pnlPercent={totalPnlPercent}
+                  />
+                  <SummaryCards account={account} equity={equity} metrics={metrics} />
+                  <Suspense fallback={<LoadingPanel message="Loading account chart…" />}>
+                    <EquityChart snapshots={dashboard.snapshots} />
+                  </Suspense>
+                  <section className="rounded-2xl border border-[#202c32] bg-[#10171b] p-5">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-[#334338] bg-[#19251d] text-[#b6f36b]">
@@ -420,7 +454,7 @@ export default function Dashboard({ session }) {
                       {account.server.includes('Demo') ? 'DEMO' : 'CONNECTED'}
                     </span>
                   </div>
-                  <div className="mt-5 space-y-3">
+                  <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
                     <DetailRow label="Account login" value={`#${account.login}`} />
                     <DetailRow label="Server" value={serverLabel} />
                     <DetailRow label="Account type" value={account.account_type} />
@@ -432,17 +466,11 @@ export default function Dashboard({ session }) {
                     <Bot className="mt-0.5 shrink-0 text-[#9acb6a]" size={14} />
                     <p>Account history is sampled by the trading engine every five minutes and refreshed here every 30 seconds.</p>
                   </div>
+                  </section>
                 </div>
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 gap-4 2xl:grid-cols-[minmax(0,1.65fr)_minmax(330px,0.85fr)]">
-                <div id="trade-activity">
-                  <TradesTable trades={dashboard.trades} />
-                </div>
-                <div id="ai-insights">
-                  <AiLogFeed logs={dashboard.aiLogs} />
-                </div>
-              </div>
+              )}
+              {activeTab === 'trades' && <TradesTable trades={dashboard.trades} />}
+              {activeTab === 'ai' && <AiLogFeed logs={dashboard.aiLogs} />}
             </>
           )}
 

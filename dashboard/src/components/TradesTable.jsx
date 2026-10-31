@@ -16,55 +16,18 @@ function time(value) {
   })
 }
 
-export default function TradesTable({ trades }) {
-  const [filter, setFilter] = useState('all')
-  const [search, setSearch] = useState('')
-  const [sortAscending, setSortAscending] = useState(false)
-
-  const rows = useMemo(() => {
-    const query = search.trim().toLowerCase()
-    return trades
-      .filter((trade) => filter === 'all' || trade.status === filter)
-      .filter((trade) => !query || `${trade.ticket} ${trade.symbol}`.toLowerCase().includes(query))
-      .sort((a, b) => {
-        const difference = new Date(a.opened_at).getTime() - new Date(b.opened_at).getTime()
-        return sortAscending ? difference : -difference
-      })
-  }, [filter, search, sortAscending, trades])
-
+function TradeSection({ title, description, trades, sortAscending, onToggleSort }) {
   return (
     <section className="overflow-hidden rounded-2xl border border-[#202c32] bg-[#10171b]">
-      <div className="flex flex-col gap-3 border-b border-[#202c32] px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+      <div className="flex items-center justify-between border-b border-[#202c32] px-5 py-4">
         <div>
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-[#e8efec]">Trade activity</h2>
-            <span className="rounded-full border border-[#2a373d] bg-[#172126] px-2 py-0.5 text-[10px] text-[#8fa0a3]">
-              {rows.length} shown
+            <h2 className="text-sm font-semibold text-[#e8efec]">{title}</h2>
+            <span className="mono rounded-full border border-[#2a373d] bg-[#172126] px-2 py-0.5 text-[10px] text-[#9caaaa]">
+              {trades.length}
             </span>
           </div>
-          <p className="mt-1 text-[11px] text-[#718186]">Latest executions and closed positions</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="relative min-w-[145px] flex-1 sm:flex-none">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#718186]" size={14} />
-            <input
-              aria-label="Search trades"
-              className="h-9 w-full rounded-lg border border-[#27343a] bg-[#0b1115] pl-9 pr-3 text-xs text-[#e4ece9] outline-none placeholder:text-[#59686d] focus:border-[#536a54] sm:w-40"
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Ticket or symbol"
-              value={search}
-            />
-          </label>
-          <select
-            aria-label="Filter trade status"
-            className="h-9 rounded-lg border border-[#27343a] bg-[#0b1115] px-3 text-xs text-[#b8c5c5] outline-none focus:border-[#536a54]"
-            onChange={(event) => setFilter(event.target.value)}
-            value={filter}
-          >
-            <option value="all">All trades</option>
-            <option value="open">Open</option>
-            <option value="closed">Closed</option>
-          </select>
+          <p className="mt-1 text-[11px] text-[#718186]">{description}</p>
         </div>
       </div>
 
@@ -82,7 +45,7 @@ export default function TradesTable({ trades }) {
               <th className="px-5 py-3 font-semibold">
                 <button
                   className="inline-flex items-center gap-1 font-semibold tracking-[0.13em] hover:text-[#bdc8c8]"
-                  onClick={() => setSortAscending((value) => !value)}
+                  onClick={onToggleSort}
                   type="button"
                 >
                   OPEN TIME
@@ -92,7 +55,7 @@ export default function TradesTable({ trades }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((trade) => {
+            {trades.map((trade) => {
               const isBuy = trade.side === 'BUY'
               const pnl = Number(trade.profit_loss)
               return (
@@ -129,10 +92,10 @@ export default function TradesTable({ trades }) {
                 </tr>
               )
             })}
-            {!rows.length && (
+            {!trades.length && (
               <tr>
-                <td className="px-5 py-14 text-center text-xs text-[#77878b]" colSpan={8}>
-                  No trades match this view.
+                <td className="px-5 py-12 text-center text-xs text-[#77878b]" colSpan={8}>
+                  No trades in this section.
                 </td>
               </tr>
             )}
@@ -140,5 +103,59 @@ export default function TradesTable({ trades }) {
         </table>
       </div>
     </section>
+  )
+}
+
+export default function TradesTable({ trades }) {
+  const [search, setSearch] = useState('')
+  const [sortAscending, setSortAscending] = useState(false)
+
+  const filteredTrades = useMemo(() => {
+    const query = search.trim().toLowerCase()
+    return trades
+      .filter((trade) => !query || `${trade.ticket} ${trade.symbol}`.toLowerCase().includes(query))
+      .sort((a, b) => {
+        const difference = new Date(a.opened_at).getTime() - new Date(b.opened_at).getTime()
+        return sortAscending ? difference : -difference
+      })
+  }, [search, sortAscending, trades])
+  const openTrades = filteredTrades.filter((trade) => trade.status === 'open')
+  const closedTrades = filteredTrades.filter((trade) => trade.status === 'closed')
+  const toggleSort = () => setSortAscending((value) => !value)
+
+  return (
+    <div className="space-y-4">
+      <section className="flex flex-col gap-3 rounded-2xl border border-[#202c32] bg-[#10171b] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-[9px] font-bold tracking-[0.18em] text-[#789078]">EXECUTION HISTORY</p>
+          <h2 className="mt-1 text-lg font-semibold text-[#e8efec]">Trade activity</h2>
+          <p className="mt-1 text-[11px] text-[#718186]">Open positions and completed trades, shown separately.</p>
+        </div>
+        <label className="relative min-w-[180px] sm:w-64">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#718186]" size={14} />
+          <input
+            aria-label="Search trades"
+            className="h-10 w-full rounded-lg border border-[#27343a] bg-[#0b1115] pl-9 pr-3 text-xs text-[#e4ece9] outline-none placeholder:text-[#59686d] focus:border-[#536a54]"
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search ticket or symbol"
+            value={search}
+          />
+        </label>
+      </section>
+      <TradeSection
+        description="Positions currently open in the trading account"
+        onToggleSort={toggleSort}
+        sortAscending={sortAscending}
+        title="Open positions"
+        trades={openTrades}
+      />
+      <TradeSection
+        description="Closed positions and realized results"
+        onToggleSort={toggleSort}
+        sortAscending={sortAscending}
+        title="Closed history"
+        trades={closedTrades}
+      />
+    </div>
   )
 }

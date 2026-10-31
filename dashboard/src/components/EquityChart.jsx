@@ -80,7 +80,7 @@ export default function EquityChart({ snapshots }) {
         </div>
       </div>
       {data.length < 2 ? (
-        <div className="flex h-[280px] flex-col items-center justify-center px-6 text-center">
+        <div className="flex h-[360px] flex-col items-center justify-center px-6 text-center">
           <CircleHelp className="text-[#516167]" size={24} />
           <p className="mt-3 text-sm font-medium text-[#cbd5d4]">Building account history</p>
           <p className="mt-1 max-w-sm text-xs leading-5 text-[#78888d]">
@@ -88,7 +88,7 @@ export default function EquityChart({ snapshots }) {
           </p>
         </div>
       ) : (
-        <div className="h-[280px] w-full px-2 pb-3 pt-5 sm:px-4">
+        <div className="h-[360px] w-full px-2 pb-3 pt-5 sm:px-4">
           <ResponsiveContainer height="100%" width="100%">
             <AreaChart data={data} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
               <defs>
