@@ -239,6 +239,8 @@ def run() -> None:
                     int(account["login"]),
                     str(account["server"]),
                     float(account["balance"]),
+                    str(account["account_type"]),
+                    str(account["currency"]),
                 )
                 if (
                     not _last_snapshot_at

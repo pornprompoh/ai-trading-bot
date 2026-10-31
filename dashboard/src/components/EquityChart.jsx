@@ -47,7 +47,7 @@ export default function EquityChart({ snapshots }) {
     () =>
       snapshots.map((snapshot) => ({
         ...snapshot,
-        timestamp: new Date(snapshot.captured_at).getTime(),
+        timestamp: new Date(snapshot.recorded_at).getTime(),
         balance: Number(snapshot.balance),
         equity: Number(snapshot.equity),
       })),

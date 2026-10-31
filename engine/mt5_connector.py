@@ -133,9 +133,19 @@ def get_account_status() -> dict[str, int | float | str]:
     if account is None:
         code, message = mt5.last_error()
         raise RuntimeError(f"Could not read MT5 account (code={code}): {message}")
+    trade_mode = int(account.trade_mode)
+    account_type = (
+        "Demo"
+        if trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO
+        else "Contest"
+        if trade_mode == mt5.ACCOUNT_TRADE_MODE_CONTEST
+        else "Real"
+    )
     return {
         "login": int(account.login),
         "server": str(account.server),
+        "account_type": account_type,
+        "currency": str(account.currency),
         "balance": float(account.balance),
         "equity": float(account.equity),
         "margin": float(account.margin),

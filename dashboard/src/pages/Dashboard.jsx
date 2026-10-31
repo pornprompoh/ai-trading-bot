@@ -102,7 +102,7 @@ function AccountOverview({ account, equity, pnl, pnlPercent, lastHeartbeat, acti
             <span className="h-1 w-1 rounded-full bg-[#53645d]" />
             <span>{account.server}</span>
             <span className="h-1 w-1 rounded-full bg-[#53645d]" />
-            <span className="mono text-[#71847c]">{account.id.slice(0, 8)}…</span>
+            <span className="mono text-[#71847c]">DB #{account.account_id}</span>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-3 sm:gap-x-10 xl:pr-3">
@@ -164,7 +164,12 @@ export default function Dashboard({ session }) {
       .then((rows) => {
         if (!active) return
         setAccounts(rows)
-        setAccountId((current) => current && rows.some((row) => row.id === current) ? current : rows[0]?.id ?? '')
+        setAccountId(
+          (current) =>
+            current && rows.some((row) => row.account_id === current)
+              ? current
+              : rows[0]?.account_id ?? '',
+        )
       })
       .catch((fetchError) => {
         if (active) setError(fetchError.message)
@@ -217,7 +222,7 @@ export default function Dashboard({ session }) {
     }
   }, [accountId])
 
-  const account = accounts.find((row) => row.id === accountId)
+  const account = accounts.find((row) => row.account_id === accountId)
   const metrics = dashboard?.metrics
   const latestSnapshot = dashboard?.snapshots.at(-1)
   const equity = latestSnapshot ? Number(latestSnapshot.equity) : null
@@ -229,7 +234,7 @@ export default function Dashboard({ session }) {
   const botActive =
     latestSnapshot &&
     now &&
-    now.getTime() - new Date(latestSnapshot.captured_at).getTime() < BOT_ACTIVE_WITHIN_MS
+    now.getTime() - new Date(latestSnapshot.recorded_at).getTime() < BOT_ACTIVE_WITHIN_MS
   const openTrades = Number(metrics?.open_trades) || 0
 
   const serverLabel = useMemo(() => account?.server ?? 'No trading account', [account])
@@ -297,7 +302,7 @@ export default function Dashboard({ session }) {
                     value={accountId}
                   >
                     {accounts.map((item) => (
-                      <option key={item.id} value={item.id}>
+                      <option key={item.account_id} value={item.account_id}>
                         #{item.login} · {item.server}
                       </option>
                     ))}
@@ -374,7 +379,7 @@ export default function Dashboard({ session }) {
                 No trading account is assigned to this user.
               </div>
               <p className="mt-2 max-w-2xl text-xs leading-6 text-[#91a19a]">
-                Add your Supabase Auth user and account UUID to <code>dashboard_account_access</code> in the Supabase SQL Editor.
+                Add your Supabase Auth user ID and BIGINT account ID to <code>dashboard_account_access</code> in the Supabase SQL Editor.
               </p>
             </div>
           ) : !dashboard ? (
@@ -386,7 +391,7 @@ export default function Dashboard({ session }) {
                   account={account}
                   active={Boolean(botActive)}
                   equity={equity}
-                  lastHeartbeat={latestSnapshot?.captured_at}
+                  lastHeartbeat={latestSnapshot?.recorded_at}
                   pnl={totalPnl}
                   pnlPercent={totalPnlPercent}
                 />
@@ -418,10 +423,10 @@ export default function Dashboard({ session }) {
                   <div className="mt-5 space-y-3">
                     <DetailRow label="Account login" value={`#${account.login}`} />
                     <DetailRow label="Server" value={serverLabel} />
-                    <DetailRow label="Free margin" value={latestSnapshot ? money(latestSnapshot.free_margin) : '—'} />
-                    <DetailRow label="Used margin" value={latestSnapshot ? money(latestSnapshot.margin) : '—'} />
+                    <DetailRow label="Account type" value={account.account_type} />
+                    <DetailRow label="Currency" value={account.currency} />
                     <DetailRow label="Floating P&L" value={equity == null ? '—' : `${floatingPnl >= 0 ? '+' : ''}${money(floatingPnl)}`} tone={floatingPnl >= 0 ? 'positive' : 'negative'} />
-                    <DetailRow label="Last heartbeat" value={shortTime(latestSnapshot?.captured_at)} />
+                    <DetailRow label="Last heartbeat" value={shortTime(latestSnapshot?.recorded_at)} />
                   </div>
                   <div className="mt-5 flex items-start gap-2 rounded-xl border border-[#28373a] bg-[#121b1d] p-3 text-[10px] leading-5 text-[#8d9b9d]">
                     <Bot className="mt-0.5 shrink-0 text-[#9acb6a]" size={14} />

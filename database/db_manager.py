@@ -13,9 +13,6 @@ from database.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
-ACCOUNT_BALANCE_COLUMN = "balance"
-ACCOUNT_CONFLICT_TARGET = "login,server"
-
 
 def _first_row(data: Any, operation: str) -> dict[str, Any]:
     """Validate a Supabase response and return its first row."""
@@ -26,48 +23,69 @@ def _first_row(data: Any, operation: str) -> dict[str, Any]:
     raise RuntimeError(f"Supabase {operation} returned no row.")
 
 
-def sync_account(login: int, server: str, balance: float) -> str:
-    """Upsert by the schema's login/server unique key and return the account ID.
-
-    PostgREST ``on_conflict`` takes the unique key's column list, not the
-    PostgreSQL constraint name.
-    """
-    if login <= 0 or not server.strip() or balance < 0:
-        raise ValueError("Invalid account login, server, or balance.")
+def sync_account(
+    login: int,
+    server: str,
+    balance: float,
+    account_type: str,
+    currency: str,
+) -> int:
+    """Update an existing account or insert it, then return its BIGINT ID."""
+    if (
+        login <= 0
+        or not server.strip()
+        or balance < 0
+        or not account_type.strip()
+        or not currency.strip()
+    ):
+        raise ValueError("Invalid account login, server, type, currency, or balance.")
 
     try:
-        response = (
-            get_supabase_client()
-            .table("trading_accounts")
-            .upsert(
-                {
-                    "login": login,
-                    "server": server,
-                    ACCOUNT_BALANCE_COLUMN: balance,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                },
-                on_conflict=ACCOUNT_CONFLICT_TARGET,
-            )
+        client = get_supabase_client()
+        existing = (
+            client.table("trading_accounts")
+            .select("account_id")
+            .eq("login", login)
+            .eq("server", server)
+            .limit(1)
             .execute()
         )
-        row = _first_row(response.data, "account sync")
-        return str(row.get("account_id") or row.get("id"))
+        values = {
+            "login": login,
+            "server": server,
+            "account_type": account_type,
+            "currency": currency,
+            "balance": balance,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        rows = existing.data or []
+        if rows:
+            row = _first_row(rows, "account lookup")
+            account_id = int(row["account_id"])
+            (
+                client.table("trading_accounts")
+                .update(values)
+                .eq("account_id", account_id)
+                .execute()
+            )
+            return account_id
+
+        response = client.table("trading_accounts").insert(values).execute()
+        return int(_first_row(response.data, "account insert")["account_id"])
     except Exception:
         logger.exception("Could not sync trading account %s on %s.", login, server)
         raise
 
 
-def record_account_snapshot(account_id: str, account_status: Mapping[str, Any]) -> None:
+def record_account_snapshot(account_id: int, account_status: Mapping[str, Any]) -> None:
     """Persist a balance/equity sample for dashboard history."""
     snapshot = {
         "account_id": account_id,
         "balance": float(account_status["balance"]),
         "equity": float(account_status["equity"]),
-        "margin": float(account_status["margin"]),
-        "free_margin": float(account_status["free_margin"]),
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
-    if any(snapshot[key] < 0 for key in ("balance", "equity", "margin", "free_margin")):
+    if any(snapshot[key] < 0 for key in ("balance", "equity")):
         raise ValueError("Account snapshot values cannot be negative.")
     try:
         get_supabase_client().table("account_equity_snapshots").insert(snapshot).execute()
@@ -81,34 +99,71 @@ def record_trade_open(
     indicators_dict: Mapping[str, Any],
     reasoning: str,
     context_dict: Mapping[str, Any] | None = None,
-) -> str:
+) -> int:
     """Insert an opened trade plus its indicator, AI, and market context."""
     context = dict(context_dict or {})
+    symbol = str(trade_data["symbol"])
+    timeframe = context.get("timeframe")
+    market_session = context.get("session_utc")
+    if not isinstance(timeframe, str) or not timeframe:
+        raise ValueError("Trade context must include a timeframe.")
+    if not isinstance(market_session, str) or not market_session:
+        raise ValueError("Trade context must include the market session.")
+
+    log_data = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "indicators_snapshot": {
+            "indicators": dict(indicators_dict),
+            "context": context,
+        },
+        "ai_reasoning": reasoning,
+        "market_session": market_session,
+    }
+
     for attempt in range(3):
         try:
-            trade_response = (
-                get_supabase_client()
-                .table("trades")
-                .upsert({**dict(trade_data), "context": context}, on_conflict="ticket")
+            client = get_supabase_client()
+            existing_trade = (
+                client.table("trades")
+                .select("trade_id")
+                .eq("account_id", trade_data["account_id"])
+                .eq("ticket", trade_data["ticket"])
+                .limit(1)
                 .execute()
             )
-            trade_id = str(_first_row(trade_response.data, "trade upsert")["id"])
-            log_response = (
-                get_supabase_client()
-                .table("ai_trade_logs")
-                .upsert(
-                    {
-                        "trade_id": trade_id,
-                        "indicators": dict(indicators_dict),
-                        "context": context,
-                        "timeframe": trade_data.get("timeframe"),
-                        "reasoning": reasoning,
-                    },
-                    on_conflict="trade_id",
+            trade_rows = existing_trade.data or []
+            if trade_rows:
+                trade_id = int(
+                    _first_row(trade_rows, "trade lookup")["trade_id"]
                 )
+            else:
+                trade_response = (
+                    client.table("trades").insert(dict(trade_data)).execute()
+                )
+                trade_id = int(
+                    _first_row(trade_response.data, "trade insert")["trade_id"]
+                )
+
+            log_values = {"trade_id": trade_id, **log_data}
+            existing_log = (
+                client.table("ai_trade_logs")
+                .select("log_id")
+                .eq("trade_id", trade_id)
+                .limit(1)
                 .execute()
             )
-            _first_row(log_response.data, "AI trade log upsert")
+            log_rows = existing_log.data or []
+            if log_rows:
+                log_id = int(_first_row(log_rows, "AI trade log lookup")["log_id"])
+                (
+                    client.table("ai_trade_logs")
+                    .update(log_data)
+                    .eq("log_id", log_id)
+                    .execute()
+                )
+            else:
+                client.table("ai_trade_logs").insert(log_values).execute()
             logger.info(
                 "Recorded opened trade ticket=%s id=%s.",
                 trade_data.get("ticket"),
@@ -159,7 +214,7 @@ def record_trade_close(
                     "close_price": close_price,
                     "profit_loss": profit_loss,
                     "exit_reason": exit_reason,
-                    "closed_at": datetime.now(timezone.utc).isoformat(),
+                    "close_time": datetime.now(timezone.utc).isoformat(),
                     "status": "closed",
                 }
             )

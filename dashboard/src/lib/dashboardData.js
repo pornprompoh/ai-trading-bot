@@ -17,10 +17,14 @@ export async function fetchAccounts() {
 
   const accountResult = await supabase
     .from('trading_accounts')
-    .select('id,login,server,balance,updated_at')
-    .in('id', accountIds)
+    .select('account_id,login,server,account_type,currency,balance,updated_at')
+    .in('account_id', accountIds)
     .order('updated_at', { ascending: false })
-  return assertQuery(accountResult, 'Could not load trading accounts') ?? []
+  const accounts = assertQuery(accountResult, 'Could not load trading accounts') ?? []
+  return accounts.map((account) => ({
+    ...account,
+    account_id: String(account.account_id),
+  }))
 }
 
 export async function fetchAccountDashboard(accountId) {
@@ -28,24 +32,24 @@ export async function fetchAccountDashboard(accountId) {
     supabase
       .from('trades')
       .select(
-        'id,ticket,symbol,side,volume,open_price,stop_loss,take_profit,profit_loss,status,opened_at,closed_at,exit_reason,context',
+        'trade_id,ticket,symbol,action,volume,open_price,sl_price,tp_price,profit_loss,status,open_time,close_time,exit_reason',
       )
       .eq('account_id', accountId)
-      .order('opened_at', { ascending: false })
+      .order('open_time', { ascending: false })
       .limit(100),
     supabase
       .from('ai_trade_logs')
       .select(
-        'id,trade_id,indicators,reasoning,context,timeframe,created_at,trades!inner(symbol,side,ticket,account_id)',
+        'log_id,trade_id,symbol,timeframe,indicators_snapshot,ai_reasoning,market_session,created_at,trades!inner(symbol,action,ticket,account_id)',
       )
       .eq('trades.account_id', accountId)
       .order('created_at', { ascending: false })
       .limit(30),
     supabase
       .from('account_equity_snapshots')
-      .select('balance,equity,margin,free_margin,captured_at')
+      .select('balance,equity,recorded_at')
       .eq('account_id', accountId)
-      .order('captured_at', { ascending: false })
+      .order('recorded_at', { ascending: false })
       .limit(500),
     supabase
       .from('dashboard_trade_metrics')
@@ -56,8 +60,25 @@ export async function fetchAccountDashboard(accountId) {
       .maybeSingle(),
   ])
 
-  const trades = assertQuery(tradesResult, 'Could not load trades') ?? []
-  const aiLogs = assertQuery(logsResult, 'Could not load AI decisions') ?? []
+  const trades = (assertQuery(tradesResult, 'Could not load trades') ?? []).map((trade) => ({
+    ...trade,
+    id: trade.trade_id,
+    side: trade.action,
+    stop_loss: trade.sl_price,
+    take_profit: trade.tp_price,
+    opened_at: trade.open_time,
+    closed_at: trade.close_time,
+  }))
+  const aiLogs = (assertQuery(logsResult, 'Could not load AI decisions') ?? []).map((log) => ({
+    ...log,
+    id: log.log_id,
+    indicators: log.indicators_snapshot?.indicators ?? {},
+    context: log.indicators_snapshot?.context ?? {},
+    reasoning: log.ai_reasoning,
+    trades: log.trades
+      ? { ...log.trades, side: log.trades.action }
+      : null,
+  }))
   const snapshots = assertQuery(snapshotsResult, 'Could not load equity history') ?? []
   const metrics = assertQuery(metricsResult, 'Could not load trade metrics')
 

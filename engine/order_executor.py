@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 import MetaTrader5 as mt5
 
-from config.settings import AUTO_TRADING_ENABLED, DEMO_ACCOUNT_ONLY, WATCHLIST
+from config.settings import AUTO_TRADING_ENABLED, DEMO_ACCOUNT_ONLY
 from database.db_manager import record_trade_open, sync_account
 from engine.mt5_connector import get_account_status, is_demo_account
 
@@ -127,7 +127,11 @@ def open_order(
     }
     account = get_account_status()
     account_id = sync_account(
-        int(account["login"]), str(account["server"]), float(account["balance"])
+        int(account["login"]),
+        str(account["server"]),
+        float(account["balance"]),
+        str(account["account_type"]),
+        str(account["currency"]),
     )
     result = mt5.order_send(request)
     if result is None:
@@ -142,21 +146,18 @@ def open_order(
             f"MT5 reported a successful order without an order ticket for {symbol}."
         )
 
-    timeframe = WATCHLIST.get(symbol)
     actual_volume = float(result.volume) if result.volume else volume
     trade_data: dict[str, Any] = {
         "account_id": account_id,
         "ticket": int(result.order),
         "symbol": symbol,
-        "side": direction,
+        "action": direction,
         "volume": actual_volume,
         "open_price": float(result.price or price),
-        "stop_loss": float(request["sl"]),
-        "take_profit": float(request["tp"]),
-        "opened_at": datetime.now(timezone.utc).isoformat(),
-        "timeframe": timeframe.timeframe if timeframe else None,
+        "sl_price": float(request["sl"]),
+        "tp_price": float(request["tp"]),
+        "open_time": datetime.now(timezone.utc).isoformat(),
         "status": "open",
-        "context": dict(context or {}),
     }
     try:
         trade_id = record_trade_open(

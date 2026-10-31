@@ -22,13 +22,19 @@ in with that user's email and password.
 1. Run the repository's `database/schema.sql` in the Supabase SQL Editor. It
    creates the equity-snapshot and account-access tables, a metrics view, and
    RLS policies scoped to each authenticated user's assigned accounts.
-2. Grant the Auth user access to the intended trading account. Find its UUID
-   and the user's UUID in Supabase, then run:
+2. Grant the Auth user access to the intended trading account. Find the
+   account's BIGINT `account_id` in `trading_accounts` and the user's UUID in
+   Supabase Auth, then run:
 
    ```sql
    insert into public.dashboard_account_access (user_id, account_id)
-   values ('AUTH_USER_UUID', 'TRADING_ACCOUNT_UUID')
-   on conflict do nothing;
+   select 'AUTH_USER_UUID', 123
+   where not exists (
+       select 1
+       from public.dashboard_account_access
+       where user_id = 'AUTH_USER_UUID'
+         and account_id = 123
+   );
    ```
 
 3. Keep the existing backend `.env` key server-side (service-role key). The
