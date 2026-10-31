@@ -345,3 +345,101 @@ def get_open_trade_tickets() -> list[int]:
     except Exception:
         logger.exception("Could not fetch open trade tickets.")
         raise
+
+
+def get_top_learned_rules(
+    account_id: int,
+    symbol: str,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Return the strongest active learning rules for one account and symbol."""
+    if account_id <= 0 or not symbol.strip() or not 1 <= limit <= 3:
+        raise ValueError("Invalid account, symbol, or learned-rule limit.")
+    try:
+        response = (
+            get_supabase_client()
+            .table("learned_rules")
+            .select("category,rule_text,supporting_trades,confidence")
+            .eq("account_id", account_id)
+            .eq("symbol", symbol)
+            .eq("active", True)
+            .order("supporting_trades", desc=True)
+            .order("confidence", desc=True)
+            .order("updated_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [dict(row) for row in response.data or []]
+    except Exception:
+        logger.exception(
+            "Could not load learned rules for account %s symbol %s.",
+            account_id,
+            symbol,
+        )
+        raise
+
+
+def claim_trade_reflections(
+    account_id: int,
+    batch_size: int = 5,
+) -> list[dict[str, Any]]:
+    """Claim closed trades that are new or eligible for reflection retry."""
+    if account_id <= 0 or not 1 <= batch_size <= 100:
+        raise ValueError("Invalid account or reflection batch size.")
+    try:
+        response = get_supabase_client().rpc(
+            "claim_trade_reflections",
+            {"p_account_id": account_id, "p_batch_size": batch_size},
+        ).execute()
+        return [dict(row) for row in response.data or []]
+    except Exception:
+        logger.exception(
+            "Could not claim closed trades for reflection for account %s.",
+            account_id,
+        )
+        raise
+
+
+def complete_trade_reflection(
+    trade_id: int,
+    outcome: str,
+    category: str,
+    lesson: str,
+    original_ai_reasoning: str,
+) -> None:
+    """Atomically save a reflection and upsert its symbol-specific learned rule."""
+    if (
+        trade_id <= 0
+        or outcome not in {"win", "loss", "breakeven"}
+        or not category.strip()
+        or not lesson.strip()
+    ):
+        raise ValueError("Invalid trade reflection.")
+    try:
+        get_supabase_client().rpc(
+            "complete_trade_reflection",
+            {
+                "p_trade_id": trade_id,
+                "p_outcome": outcome,
+                "p_category": category.strip(),
+                "p_lesson": lesson.strip(),
+                "p_original_ai_reasoning": original_ai_reasoning,
+            },
+        ).execute()
+    except Exception:
+        logger.exception("Could not save reflection for trade %s.", trade_id)
+        raise
+
+
+def fail_trade_reflection(trade_id: int, error: str) -> None:
+    """Release a failed reflection claim so a later engine cycle can retry."""
+    if trade_id <= 0 or not error.strip():
+        raise ValueError("Trade ID and reflection error are required.")
+    try:
+        get_supabase_client().rpc(
+            "fail_trade_reflection",
+            {"p_trade_id": trade_id, "p_error": error.strip()[:2000]},
+        ).execute()
+    except Exception:
+        logger.exception("Could not mark reflection for trade %s as failed.", trade_id)
+        raise

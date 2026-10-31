@@ -7,14 +7,15 @@ import time
 from logging.handlers import RotatingFileHandler
 
 from config.settings import (
-    AUTO_TRADE_RISK_PERCENT,
     AUTO_TRADING_ENABLED,
     MAX_RECONNECT_DELAY_SECONDS,
     PROJECT_ROOT,
     SCAN_INTERVAL_SECONDS,
     WATCHLIST,
 )
-from engine.ai_analyst import AIDecision, confirm_entry
+from engine.ai_analyst import AIDecision
+from engine.ai_reflector import reflect_closed_trades
+from engine.ai_validator import confirm_entry
 from database.db_manager import (
     get_auto_trading_setting,
     get_pending_bot_commands,
@@ -87,7 +88,8 @@ def _scanner_reason(
 
 def scan_watchlist(account_id: int, account_auto_trading: bool) -> None:
     """Analyze completed candles, request AI confirmation, and trade if enabled."""
-    for symbol, asset in WATCHLIST.items():
+    for asset in WATCHLIST:
+        symbol = asset.symbol
         try:
             bars = get_ohlcv(symbol, asset.timeframe, n_bars=300)
             completed_bars = bars.iloc[:-1]
@@ -220,7 +222,10 @@ def scan_watchlist(account_id: int, account_auto_trading: bool) -> None:
             else:
                 try:
                     decision = confirm_entry(
-                        symbol, signal.signal_type, signal.technical_data
+                        symbol,
+                        signal.signal_type,
+                        signal.technical_data,
+                        account_id,
                     )
                 except Exception:
                     previous_attempts = (
@@ -279,13 +284,11 @@ def scan_watchlist(account_id: int, account_auto_trading: bool) -> None:
                 _ai_decision_cache.pop(symbol, None)
                 continue
             try:
-                lot = calculate_lot_size(
-                    symbol, signal.sl_points, AUTO_TRADE_RISK_PERCENT
-                )
+                lot = calculate_lot_size(symbol, signal.sl_points, asset.risk_percent)
                 context = {
                     **decision["context"],
                     "timeframe": asset.timeframe,
-                    "risk_percent": AUTO_TRADE_RISK_PERCENT,
+                    "risk_percent": asset.risk_percent,
                     "ai_confidence": decision["confidence"],
                     "ai_reasoning": decision["reasoning"],
                 }
@@ -468,6 +471,7 @@ def run() -> None:
                     )
                     connected_logged = True
                 synchronize_closed_trades()
+                reflect_closed_trades(account_id)
                 process_bot_commands(account_id)
                 account_auto_trading = get_auto_trading_setting(account_id)
                 scan_watchlist(account_id, account_auto_trading)

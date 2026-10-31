@@ -2,8 +2,6 @@ import { Activity, Clock3, TrendingDown, TrendingUp } from 'lucide-react'
 
 const WATCHLIST = [
   { symbol: 'XAUUSD.iux', timeframe: 'M15' },
-  { symbol: 'EURUSD.iux', timeframe: 'H1' },
-  { symbol: 'USDJPY.iux', timeframe: 'H1' },
 ]
 
 const STATUS_STYLES = {
@@ -58,7 +56,7 @@ export default function LiveMarketScanner({ scans, now }) {
         </span>
       </header>
 
-      <div className="grid grid-cols-1 divide-y divide-[#202c32] md:grid-cols-3 md:divide-x md:divide-y-0">
+      <div className="grid grid-cols-1 divide-y divide-[#202c32]">
         {rows.map((scan) => {
           const fresh = scan.updated_at && now && nowMs - new Date(scan.updated_at).getTime() < 150_000
           const status = fresh ? scan.signal_status : scan.updated_at ? 'unavailable' : 'scanning'

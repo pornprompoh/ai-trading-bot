@@ -28,7 +28,7 @@ export async function fetchAccounts() {
 }
 
 export async function fetchAccountDashboard(accountId) {
-  const [tradesResult, logsResult, snapshotsResult, metricsResult, scansResult, riskResult, exposureResult, commandResult] = await Promise.all([
+  const [tradesResult, logsResult, snapshotsResult, metricsResult, scansResult, riskResult, exposureResult, commandResult, rulesResult, reflectionsResult] = await Promise.all([
     supabase
       .from('trades')
       .select(
@@ -80,6 +80,22 @@ export async function fetchAccountDashboard(accountId) {
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
+    supabase
+      .from('learned_rules')
+      .select('rule_id,symbol,category,rule_text,source_trade_id,confidence,supporting_trades,active,created_at,updated_at')
+      .eq('account_id', accountId)
+      .eq('active', true)
+      .order('supporting_trades', { ascending: false })
+      .order('confidence', { ascending: false })
+      .order('updated_at', { ascending: false })
+      .limit(100),
+    supabase
+      .from('trade_reflections')
+      .select('trade_id,symbol,outcome,entry_price,exit_price,profit_loss,holding_seconds,original_ai_reasoning,category,lesson,status,created_at,reflected_at')
+      .eq('account_id', accountId)
+      .eq('status', 'completed')
+      .order('reflected_at', { ascending: false })
+      .limit(100),
   ])
 
   const trades = (assertQuery(tradesResult, 'Could not load trades') ?? []).map((trade) => ({
@@ -107,10 +123,28 @@ export async function fetchAccountDashboard(accountId) {
   const riskMetrics = assertQuery(riskResult, 'Could not load account risk metrics')
   const exposure = assertQuery(exposureResult, 'Could not load symbol exposure') ?? []
   const latestCommand = assertQuery(commandResult, 'Could not load emergency command status')
+  const tradeReflections = (assertQuery(
+    reflectionsResult,
+    'Could not load trade reflections',
+  ) ?? []).map((reflection) => ({
+    ...reflection,
+    trade_id: String(reflection.trade_id),
+  }))
+  const reflectionsByTradeId = new Map(
+    tradeReflections.map((reflection) => [reflection.trade_id, reflection]),
+  )
+  const learnedRules = (assertQuery(rulesResult, 'Could not load learned rules') ?? []).map((rule) => ({
+    ...rule,
+    rule_id: String(rule.rule_id),
+    source_trade_id: String(rule.source_trade_id),
+    source_outcome: reflectionsByTradeId.get(String(rule.source_trade_id))?.outcome ?? null,
+  }))
 
   return {
     trades,
     aiLogs,
+    learnedRules,
+    tradeReflections,
     snapshots: snapshots.reverse(),
     scans,
     riskMetrics,

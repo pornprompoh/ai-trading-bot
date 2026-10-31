@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronUp, Search } from 'lucide-react'
+import { Fragment, useMemo, useState } from 'react'
+import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronUp, Search, Sparkles } from 'lucide-react'
 
 function price(value) {
   if (value == null || !Number.isFinite(Number(value))) return '—'
@@ -16,7 +16,16 @@ function time(value) {
   })
 }
 
-function TradeSection({ title, description, trades, sortAscending, onToggleSort }) {
+function TradeSection({
+  title,
+  description,
+  trades,
+  sortAscending,
+  onToggleSort,
+  reflectionsByTradeId,
+}) {
+  const [expandedTradeId, setExpandedTradeId] = useState(null)
+  const showPostMortem = title === 'Closed history'
   return (
     <section className="overflow-hidden rounded-2xl border border-[#202c32] bg-[#10171b]">
       <div className="flex items-center justify-between border-b border-[#202c32] px-5 py-4">
@@ -42,6 +51,7 @@ function TradeSection({ title, description, trades, sortAscending, onToggleSort 
               <th className="px-3 py-3 text-right font-semibold">SL / TP</th>
               <th className="px-3 py-3 text-right font-semibold">P&amp;L</th>
               <th className="px-3 py-3 font-semibold">STATUS</th>
+              {showPostMortem && <th className="px-3 py-3 font-semibold">POST-MORTEM</th>}
               <th className="px-5 py-3 font-semibold">
                 <button
                   className="inline-flex items-center gap-1 font-semibold tracking-[0.13em] hover:text-[#bdc8c8]"
@@ -58,8 +68,11 @@ function TradeSection({ title, description, trades, sortAscending, onToggleSort 
             {trades.map((trade) => {
               const isBuy = trade.side === 'BUY'
               const pnl = Number(trade.profit_loss)
+              const reflection = reflectionsByTradeId.get(String(trade.id))
+              const isExpanded = expandedTradeId === String(trade.id)
               return (
-                <tr className="border-b border-[#1d282e] last:border-0 hover:bg-[#141d21]" key={trade.id}>
+                <Fragment key={trade.id}>
+                <tr className="border-b border-[#1d282e] last:border-0 hover:bg-[#141d21]">
                   <td className="px-5 py-3.5">
                     <p className="mono text-[11px] text-[#dce6e2]">#{trade.ticket}</p>
                     <p className="mt-1 text-xs font-medium text-[#aebcba]">{trade.symbol}</p>
@@ -88,13 +101,67 @@ function TradeSection({ title, description, trades, sortAscending, onToggleSort 
                       {trade.status}
                     </span>
                   </td>
+                  {showPostMortem && (
+                    <td className="px-3 py-3.5">
+                      <button
+                        aria-expanded={isExpanded}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-[#3b344f] bg-[#211b30] px-2.5 py-1.5 text-[9px] font-semibold text-[#c7a6ff] transition hover:border-[#5b4b78] hover:bg-[#29213a]"
+                        onClick={() => setExpandedTradeId(isExpanded ? null : String(trade.id))}
+                        type="button"
+                      >
+                        <Sparkles size={11} />
+                        {isExpanded ? 'Hide critique' : 'Post-mortem'}
+                      </button>
+                    </td>
+                  )}
                   <td className="px-5 py-3.5 text-[10px] text-[#869497]">{time(trade.opened_at)}</td>
                 </tr>
+                {showPostMortem && isExpanded && (
+                  <tr className="border-b border-[#1d282e]">
+                    <td className="px-5 py-4" colSpan={9}>
+                      {reflection ? (
+                        <div className="grid gap-3 rounded-xl border border-[#343044] bg-[#15131d] p-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className={`rounded-full border px-2.5 py-1 text-[9px] font-bold tracking-wide ${reflection.outcome === 'win' ? 'border-[#3e5833] bg-[#1d3024] text-[#b7ed83]' : reflection.outcome === 'loss' ? 'border-[#604040] bg-[#302020] text-[#ffaaa0]' : 'border-[#3a4444] bg-[#202929] text-[#aebcba]'}`}>
+                                {String(reflection.outcome).toUpperCase()}
+                              </span>
+                              {reflection.category && (
+                                <span className="rounded-md border border-[#3b344f] bg-[#211b30] px-2 py-1 text-[9px] font-semibold tracking-wide text-[#c7a6ff]">
+                                  {String(reflection.category).replaceAll('_', ' ').toUpperCase()}
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-3 text-[9px] font-bold tracking-[0.14em] text-[#8b7aa8]">KEY LESSON</p>
+                            <p className="mt-1 text-xs leading-5 text-[#d0c8dc]">{reflection.lesson}</p>
+                          </div>
+                          <div className="rounded-lg border border-[#2a2734] bg-[#100f16] p-3">
+                            <p className="text-[9px] font-bold tracking-[0.14em] text-[#8b7aa8]">
+                              {reflection.outcome === 'loss' ? 'MISSED WARNING / CRITIQUE' : 'SUCCESS FACTOR / CRITIQUE'}
+                            </p>
+                            <p className="mt-2 text-[10px] leading-5 text-[#b5adbf]">{reflection.lesson}</p>
+                            {reflection.original_ai_reasoning && (
+                              <div className="mt-3 border-t border-[#292632] pt-3">
+                                <p className="text-[8px] font-bold tracking-[0.12em] text-[#716a7d]">ORIGINAL ENTRY REASONING</p>
+                                <p className="mt-1 text-[10px] leading-5 text-[#928b9d]">{reflection.original_ai_reasoning}</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-[#343044] bg-[#15131d] px-4 py-3 text-[10px] text-[#948aa3]">
+                          Post-mortem reflection is pending for this closed trade.
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               )
             })}
             {!trades.length && (
               <tr>
-                <td className="px-5 py-12 text-center text-xs text-[#77878b]" colSpan={8}>
+                <td className="px-5 py-12 text-center text-xs text-[#77878b]" colSpan={showPostMortem ? 9 : 8}>
                   No trades in this section.
                 </td>
               </tr>
@@ -106,7 +173,7 @@ function TradeSection({ title, description, trades, sortAscending, onToggleSort 
   )
 }
 
-export default function TradesTable({ trades }) {
+export default function TradesTable({ trades, reflections = [] }) {
   const [search, setSearch] = useState('')
   const [sortAscending, setSortAscending] = useState(false)
 
@@ -121,6 +188,10 @@ export default function TradesTable({ trades }) {
   }, [search, sortAscending, trades])
   const openTrades = filteredTrades.filter((trade) => trade.status === 'open')
   const closedTrades = filteredTrades.filter((trade) => trade.status === 'closed')
+  const reflectionsByTradeId = useMemo(
+    () => new Map(reflections.map((reflection) => [String(reflection.trade_id), reflection])),
+    [reflections],
+  )
   const toggleSort = () => setSortAscending((value) => !value)
 
   return (
@@ -148,6 +219,7 @@ export default function TradesTable({ trades }) {
         sortAscending={sortAscending}
         title="Open positions"
         trades={openTrades}
+        reflectionsByTradeId={reflectionsByTradeId}
       />
       <TradeSection
         description="Closed positions and realized results"
@@ -155,6 +227,7 @@ export default function TradesTable({ trades }) {
         sortAscending={sortAscending}
         title="Closed history"
         trades={closedTrades}
+        reflectionsByTradeId={reflectionsByTradeId}
       />
     </div>
   )

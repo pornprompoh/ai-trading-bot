@@ -1,4 +1,4 @@
-import { BrainCircuit, Check, Clock3 } from 'lucide-react'
+import { BrainCircuit, Check, Clock3, Lightbulb, Sparkles } from 'lucide-react'
 
 function confidenceOf(log) {
   const value = Number(log.context?.ai_confidence ?? log.indicators?.ai_confidence)
@@ -16,9 +16,83 @@ function timestamp(value) {
   })
 }
 
-export default function AiLogFeed({ logs }) {
+function LearnedKnowledgeBase({ rules }) {
+  return (
+    <section className="overflow-hidden rounded-2xl border border-[#29382f] bg-[#101814]">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#26332b] px-5 py-4">
+        <div className="flex items-center gap-3">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#354935] bg-[#1a281d] text-[#c4ec8a]">
+            <Lightbulb size={17} />
+          </span>
+          <div>
+            <h2 className="text-sm font-semibold text-[#e8efec]">Learned Knowledge Base</h2>
+            <p className="mt-1 text-[10px] text-[#819087]">Symbol-specific lessons distilled from closed trades</p>
+          </div>
+        </div>
+        <span className="rounded-full border border-[#344338] bg-[#1a251d] px-2.5 py-1 text-[9px] font-semibold tracking-wide text-[#b8d99a]">
+          {rules.length} ACTIVE {rules.length === 1 ? 'RULE' : 'RULES'}
+        </span>
+      </header>
+
+      {rules.length ? (
+        <div className="grid grid-cols-1 gap-3 p-4 xl:grid-cols-2">
+          {rules.map((rule) => {
+            const sourceTone = rule.source_outcome === 'win'
+              ? 'border-[#3c5836] bg-[#1d3024] text-[#b7ed83]'
+              : rule.source_outcome === 'loss'
+                ? 'border-[#60403a] bg-[#33211f] text-[#ffab96]'
+                : 'border-[#3a4444] bg-[#202929] text-[#aebcba]'
+            return (
+              <article
+                className="rounded-xl border border-[#26332d] bg-[#0c1210] p-4"
+                key={rule.rule_id}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-md border border-[#34433a] bg-[#17211b] px-2 py-1 text-[9px] font-bold tracking-[0.1em] text-[#b8d89a]">
+                    {String(rule.category).replaceAll('_', ' ').toUpperCase()}
+                  </span>
+                  <span className="mono text-[10px] text-[#8fa09a]">{rule.symbol}</span>
+                  <span className={`ml-auto rounded-full border px-2 py-1 text-[8px] font-bold tracking-wide ${sourceTone}`}>
+                    {rule.source_outcome ? `SOURCE · ${rule.source_outcome.toUpperCase()}` : 'SOURCE · REFLECTION'}
+                  </span>
+                </div>
+                <p className="mt-3 text-xs leading-6 text-[#c5d0ca]">{rule.rule_text}</p>
+                <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-[#202b24] pt-3 text-[9px] text-[#77877f]">
+                  <span>
+                    WEIGHT <strong className="mono ml-1 text-[#c5d49c]">
+                      {Number.isFinite(Number(rule.confidence))
+                        ? `${(Number(rule.confidence) * 100).toFixed(0)}%`
+                        : '—'}
+                    </strong>
+                  </span>
+                  <span>
+                    REUSED <strong className="mono ml-1 text-[#aebbb2]">
+                      {Number(rule.supporting_trades) || 0}
+                    </strong>
+                  </span>
+                  <span className="ml-auto">Trade #{rule.source_trade_id}</span>
+                </div>
+              </article>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="flex min-h-[175px] flex-col items-center justify-center px-6 text-center">
+          <Sparkles className="text-[#64745e]" size={22} />
+          <p className="mt-3 text-xs font-medium text-[#c1ccca]">Knowledge base is warming up</p>
+          <p className="mt-1 max-w-md text-[10px] leading-5 text-[#75857d]">
+            Waiting for closed trades to generate reflections. Active, symbol-specific lessons will appear here.
+          </p>
+        </div>
+      )}
+    </section>
+  )
+}
+
+export default function AiLogFeed({ logs, learnedRules = [] }) {
   return (
     <div className="space-y-4">
+      <LearnedKnowledgeBase rules={learnedRules} />
       <section className="flex items-center justify-between gap-3 rounded-2xl border border-[#202c32] bg-[#10171b] px-5 py-4">
         <div>
           <p className="text-[9px] font-bold tracking-[0.18em] text-[#9b86c2]">GEMINI REVIEW</p>

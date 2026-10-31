@@ -41,14 +41,13 @@ except ValueError as exc:
 class AssetConfig:
     """Trading parameters for a single watched symbol."""
 
+    symbol: str
     timeframe: str
     risk_percent: float
 
 
-WATCHLIST: dict[str, AssetConfig] = {
-    "XAUUSD.iux": AssetConfig(timeframe="M15", risk_percent=1.0),
-    "EURUSD.iux": AssetConfig(timeframe="M15", risk_percent=1.5),
-    "USDJPY.iux": AssetConfig(timeframe="M15", risk_percent=1.5),
-}
+WATCHLIST: list[AssetConfig] = [
+    AssetConfig(symbol="XAUUSD.iux", timeframe="M15", risk_percent=1.0),
+]
 
 SCAN_INTERVAL_SECONDS = 60

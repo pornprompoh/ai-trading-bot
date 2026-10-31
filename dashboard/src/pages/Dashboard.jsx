@@ -17,16 +17,16 @@ import {
 import { fetchAccountDashboard, fetchAccounts } from '../lib/dashboardData'
 import { money } from '../lib/format'
 import { supabase } from '../lib/supabase'
-import AiLogFeed from '../components/AiLogFeed'
 import BotControls from '../components/BotControls'
 import LiveMarketScanner from '../components/LiveMarketScanner'
 import RiskMetrics from '../components/RiskMetrics'
 import SummaryCards from '../components/SummaryCards'
-import TradesTable from '../components/TradesTable'
 
 const REFRESH_INTERVAL_MS = 30_000
 const BOT_ACTIVE_WITHIN_MS = 11 * 60 * 1000
 const EquityChart = lazy(() => import('../components/EquityChart'))
+const AiLogFeed = lazy(() => import('../components/AiLogFeed'))
+const TradesTable = lazy(() => import('../components/TradesTable'))
 
 function shortTime(value) {
   if (!value) return 'Waiting for first heartbeat'
@@ -495,8 +495,22 @@ export default function Dashboard({ session }) {
                   />
                 </div>
               )}
-              {activeTab === 'trades' && <TradesTable trades={dashboard.trades} />}
-              {activeTab === 'ai' && <AiLogFeed logs={dashboard.aiLogs} />}
+              {activeTab === 'trades' && (
+                <Suspense fallback={<LoadingPanel message="Loading trade activity…" />}>
+                  <TradesTable
+                    reflections={dashboard.tradeReflections}
+                    trades={dashboard.trades}
+                  />
+                </Suspense>
+              )}
+              {activeTab === 'ai' && (
+                <Suspense fallback={<LoadingPanel message="Loading AI insights…" />}>
+                  <AiLogFeed
+                    logs={dashboard.aiLogs}
+                    learnedRules={dashboard.learnedRules}
+                  />
+                </Suspense>
+              )}
             </>
           )}
 
