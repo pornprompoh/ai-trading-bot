@@ -57,6 +57,47 @@ def shutdown() -> None:
     mt5.shutdown()
 
 
+def ensure_connected() -> None:
+    """Initialize/reinitialize MT5 if the terminal or account is unavailable."""
+    terminal = mt5.terminal_info()
+    if (
+        terminal is None
+        or not terminal.connected
+        or mt5.account_info() is None
+    ):
+        logger.warning("MT5 terminal connection is unavailable; reconnecting.")
+        connect()
+
+
+def has_open_position(symbol: str) -> bool:
+    """Return whether any MT5 position is already open for this symbol."""
+    positions = mt5.positions_get(symbol=symbol)
+    if positions is None:
+        code, message = mt5.last_error()
+        raise RuntimeError(
+            f"Could not check open positions for {symbol} (code={code}): {message}"
+        )
+    return bool(positions)
+
+
+def get_symbol_point(symbol: str) -> float:
+    """Return a symbol's broker point size or raise if metadata is unavailable."""
+    info = mt5.symbol_info(symbol)
+    if info is None or float(info.point) <= 0:
+        code, message = mt5.last_error()
+        raise RuntimeError(f"Could not read point size for {symbol} (code={code}): {message}")
+    return float(info.point)
+
+
+def is_demo_account() -> bool:
+    """Fail closed unless the currently connected MT5 account is a demo account."""
+    account = mt5.account_info()
+    if account is None:
+        code, message = mt5.last_error()
+        raise RuntimeError(f"Could not verify MT5 account mode (code={code}): {message}")
+    return int(account.trade_mode) == mt5.ACCOUNT_TRADE_MODE_DEMO
+
+
 def _timeframe_value(timeframe: str) -> int:
     try:
         return TIMEFRAMES[timeframe.upper()]

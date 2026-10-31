@@ -10,9 +10,9 @@ from typing import Any, Mapping
 
 import MetaTrader5 as mt5
 
-from config.settings import WATCHLIST
+from config.settings import AUTO_TRADING_ENABLED, DEMO_ACCOUNT_ONLY, WATCHLIST
 from database.db_manager import record_trade_open, sync_account
-from engine.mt5_connector import get_account_status
+from engine.mt5_connector import get_account_status, is_demo_account
 
 logger = logging.getLogger(__name__)
 MAGIC_NUMBER = 20261031
@@ -59,8 +59,13 @@ def open_order(
     tp_points: float,
     indicator_snapshot: Mapping[str, Any],
     reasoning: str,
+    context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Send a market order with mandatory SL/TP and persist it immediately."""
+    if not AUTO_TRADING_ENABLED:
+        raise RuntimeError("Order sending is disabled; set AUTO_TRADING_ENABLED=true to enable.")
+    if not DEMO_ACCOUNT_ONLY or not is_demo_account():
+        raise RuntimeError("Automatic orders are restricted to MT5 demo accounts.")
     direction = action.strip().upper()
     if direction not in {"BUY", "SELL"}:
         raise ValueError("action must be BUY or SELL.")
@@ -151,8 +156,20 @@ def open_order(
         "opened_at": datetime.now(timezone.utc).isoformat(),
         "timeframe": timeframe.timeframe if timeframe else None,
         "status": "open",
+        "context": dict(context or {}),
     }
-    trade_id = record_trade_open(trade_data, indicator_snapshot, reasoning)
+    try:
+        trade_id = record_trade_open(
+            trade_data, indicator_snapshot, reasoning, context_dict=context
+        )
+    except Exception:
+        logger.critical(
+            "MT5 accepted order ticket=%s, but Supabase logging failed. "
+            "The open position must be reconciled.",
+            result.order,
+            exc_info=True,
+        )
+        raise
     logger.info(
         "Opened %s %s %.2f lots (ticket=%s, trade_id=%s).",
         direction,

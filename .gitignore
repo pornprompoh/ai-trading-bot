@@ -4,3 +4,8 @@ venv/
 __pycache__/
 *.py[cod]
 logs/
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.env
+dashboard/.env.*
+!dashboard/.env.example

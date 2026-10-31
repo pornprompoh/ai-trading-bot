@@ -13,7 +13,22 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 MT5_SERVER = os.getenv("MT5_SERVER", "").strip()
+AUTO_TRADING_ENABLED = os.getenv("AUTO_TRADING_ENABLED", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+DEMO_ACCOUNT_ONLY = os.getenv("DEMO_ACCOUNT_ONLY", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+AUTO_TRADE_RISK_PERCENT = 1.0
+MIN_AI_CONFIDENCE = 0.70
+MAX_RECONNECT_DELAY_SECONDS = 60
 
 _mt5_login = os.getenv("MT5_LOGIN", "").strip()
 try:
