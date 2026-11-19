@@ -24,21 +24,26 @@ from database.db_manager import (
     record_account_snapshot,
     record_market_scan,
     record_trade_close,
+    record_synced_trade,
     sync_account,
     update_bot_command,
 )
 from engine.mt5_connector import (
+    ClosedPositionRecord,
     ensure_connected,
     get_account_status,
     get_closed_deal,
+    get_open_positions,
     get_last_price,
     get_ohlcv,
+    get_recent_closed_positions,
     get_symbol_point,
     has_open_position,
     is_demo_account,
     shutdown,
 )
 from engine.order_executor import (
+    BOT_MAGIC_NUMBER,
     calculate_lot_size,
     close_all_positions,
     manage_open_positions,
@@ -56,7 +61,9 @@ _processed_signal_candles: dict[str, str] = {}
 _ai_retry_state: dict[str, tuple[str, float, int]] = {}
 _ai_decision_cache: dict[str, tuple[str, AIDecision]] = {}
 _last_snapshot_at = 0.0
+_last_history_sync_at = 0.0
 ACCOUNT_SNAPSHOT_INTERVAL_SECONDS = 300
+TRADE_HISTORY_SYNC_INTERVAL_SECONDS = 300
 COMMAND_POLL_INTERVAL_SECONDS = 5
 
 
@@ -462,9 +469,98 @@ def synchronize_closed_trades() -> None:
                 deal.close_price,
                 deal.profit_loss,
                 deal.reason,
+                close_time=deal.close_time.isoformat(),
             )
         except Exception:
             logger.exception("Could not synchronize closed position %s.", ticket)
+
+
+def _execution_source(magic: int) -> str:
+    return "BOT_SMC" if magic == BOT_MAGIC_NUMBER else "MANUAL"
+
+
+def synchronize_open_positions(account_id: int) -> None:
+    """Persist every MT5 open position, without filtering by its magic number."""
+    for position in get_open_positions():
+        try:
+            trade_data = {
+                "account_id": account_id,
+                "ticket": position["ticket"],
+                "symbol": position["symbol"],
+                "action": position["action"],
+                "execution_source": _execution_source(position["magic"]),
+                "volume": position["volume"],
+                "open_price": position["open_price"],
+                "sl_price": position["sl_price"],
+                "tp_price": position["tp_price"],
+                "open_time": position["open_time"],
+                "status": "open",
+            }
+            trade_id = record_synced_trade(trade_data)
+            logger.debug(
+                "Synchronized %s position %s as trade_id=%s.",
+                trade_data["execution_source"],
+                position["ticket"],
+                trade_id,
+            )
+        except Exception:
+            logger.exception(
+                "Could not synchronize MT5 open position %s.",
+                position.get("ticket"),
+            )
+
+
+def synchronize_recent_closed_history(account_id: int) -> None:
+    """Import recent closed positions, including manual trades missed while offline."""
+    global _last_history_sync_at
+    if (
+        _last_history_sync_at
+        and time.monotonic() - _last_history_sync_at
+        < TRADE_HISTORY_SYNC_INTERVAL_SECONDS
+    ):
+        return
+
+    positions: list[ClosedPositionRecord] = get_recent_closed_positions(days=30)
+    for position in positions:
+        try:
+            trade_data = {
+                "account_id": account_id,
+                "ticket": position.position_id,
+                "symbol": position.symbol,
+                "action": position.action,
+                "execution_source": _execution_source(position.magic),
+                "volume": position.volume,
+                "open_price": position.open_price,
+                "close_price": position.close_price,
+                "sl_price": position.stop_loss,
+                "tp_price": position.take_profit,
+                "open_time": position.open_time.isoformat(),
+                "close_time": position.close_time.isoformat(),
+                "profit_loss": position.profit_loss,
+                "exit_reason": position.exit_reason,
+                "status": "closed",
+            }
+            trade_id = record_synced_trade(trade_data)
+            if trade_id:
+                record_trade_close(
+                    position.position_id,
+                    position.close_price,
+                    position.profit_loss,
+                    position.exit_reason,
+                    close_time=position.close_time.isoformat(),
+                )
+            logger.debug(
+                "Synchronized closed %s history position %s as trade_id=%s.",
+                trade_data["execution_source"],
+                position.position_id,
+                trade_id,
+            )
+        except Exception:
+            logger.exception(
+                "Could not synchronize closed MT5 position %s.",
+                position.position_id,
+            )
+    _last_history_sync_at = time.monotonic()
 
 
 def process_bot_commands(account_id: int) -> None:
@@ -480,7 +576,8 @@ def process_bot_commands(account_id: int) -> None:
             update_bot_command(
                 command_id,
                 "completed",
-                f"Closed {closed_count} MT5 position(s); auto-trading remains disabled.",
+                f"Closed {closed_count} bot-managed MT5 position(s); manual positions "
+                "were left untouched and auto-trading remains disabled.",
             )
         except Exception as exc:
             logger.exception("Dashboard bot command %s failed.", command_id)
@@ -548,6 +645,8 @@ def run() -> None:
                     )
                     connected_logged = True
                 synchronize_closed_trades()
+                synchronize_open_positions(account_id)
+                synchronize_recent_closed_history(account_id)
                 reflect_closed_trades(account_id)
                 process_bot_commands(account_id)
                 manage_open_positions()

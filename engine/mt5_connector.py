@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -31,6 +33,26 @@ class ClosedDeal:
     close_price: float
     profit_loss: float
     reason: str
+    close_time: datetime
+
+
+@dataclass(frozen=True)
+class ClosedPositionRecord:
+    """Reconstructed trade details from a fully closed MT5 position."""
+
+    position_id: int
+    symbol: str
+    action: str
+    volume: float
+    open_price: float
+    close_price: float
+    stop_loss: float | None
+    take_profit: float | None
+    open_time: datetime
+    close_time: datetime
+    profit_loss: float
+    exit_reason: str
+    magic: int
 
 
 def connect() -> None:
@@ -78,6 +100,40 @@ def has_open_position(symbol: str) -> bool:
             f"Could not check open positions for {symbol} (code={code}): {message}"
         )
     return bool(positions)
+
+
+def get_open_positions() -> list[dict[str, Any]]:
+    """Return all terminal positions for synchronization without magic filtering."""
+    positions = mt5.positions_get()
+    if positions is None:
+        code, message = mt5.last_error()
+        raise RuntimeError(f"Could not list MT5 positions (code={code}): {message}")
+
+    result: list[dict[str, Any]] = []
+    for position in positions:
+        if position.type not in {mt5.POSITION_TYPE_BUY, mt5.POSITION_TYPE_SELL}:
+            logger.warning(
+                "Skipping unsupported MT5 position type %s for ticket %s.",
+                position.type,
+                position.ticket,
+            )
+            continue
+        result.append(
+            {
+                "ticket": int(position.ticket),
+                "symbol": str(position.symbol),
+                "action": "BUY" if position.type == mt5.POSITION_TYPE_BUY else "SELL",
+                "volume": float(position.volume),
+                "open_price": float(position.price_open),
+                "sl_price": float(position.sl) if float(position.sl) > 0 else None,
+                "tp_price": float(position.tp) if float(position.tp) > 0 else None,
+                "open_time": datetime.fromtimestamp(
+                    int(position.time), timezone.utc
+                ).isoformat(),
+                "magic": int(getattr(position, "magic", 0)),
+            }
+        )
+    return result
 
 
 def get_symbol_point(symbol: str) -> float:
@@ -210,4 +266,96 @@ def get_closed_deal(position_id: int) -> ClosedDeal | None:
         close_price=close_price,
         profit_loss=profit_loss,
         reason=reason,
+        close_time=datetime.fromtimestamp(int(exits[-1].time), timezone.utc),
     )
+
+
+def get_recent_closed_positions(days: int = 30) -> list[ClosedPositionRecord]:
+    """Rebuild completed positions from recent deal history, regardless of magic."""
+    if days <= 0:
+        raise ValueError("days must be positive.")
+    now = datetime.now(timezone.utc)
+    deals = mt5.history_deals_get(now - timedelta(days=days), now)
+    if deals is None:
+        code, message = mt5.last_error()
+        raise RuntimeError(f"Could not read recent MT5 deal history (code={code}): {message}")
+    if not deals:
+        return []
+
+    open_positions = mt5.positions_get()
+    if open_positions is None:
+        code, message = mt5.last_error()
+        raise RuntimeError(f"Could not list MT5 positions (code={code}): {message}")
+    open_ids = {int(position.identifier) for position in open_positions}
+    entry_types = {mt5.DEAL_ENTRY_IN}
+    exit_types = {mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY}
+    by_position: dict[int, list[Any]] = {}
+    for deal in deals:
+        position_id = int(getattr(deal, "position_id", 0))
+        if position_id > 0:
+            by_position.setdefault(position_id, []).append(deal)
+
+    closed: list[ClosedPositionRecord] = []
+    for position_id, position_deals in by_position.items():
+        if position_id in open_ids:
+            continue
+        entries = sorted(
+            (deal for deal in position_deals if deal.entry in entry_types),
+            key=lambda deal: int(deal.time),
+        )
+        exits = sorted(
+            (deal for deal in position_deals if deal.entry in exit_types),
+            key=lambda deal: int(deal.time),
+        )
+        if not entries or not exits:
+            continue
+
+        entry_volume = sum(float(deal.volume) for deal in entries)
+        exit_volume = sum(float(deal.volume) for deal in exits)
+        if entry_volume <= 0 or exit_volume + 1e-8 < entry_volume:
+            continue
+        first_entry = entries[0]
+        if first_entry.type not in {mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL}:
+            continue
+        open_price = sum(
+            float(deal.price) * float(deal.volume) for deal in entries
+        ) / entry_volume
+        close_price = sum(
+            float(deal.price) * float(deal.volume) for deal in exits
+        ) / exit_volume
+        profit_loss = sum(
+            float(deal.profit) + float(deal.commission) + float(deal.swap)
+            for deal in position_deals
+        )
+        last_exit = exits[-1]
+        reason = (
+            "stop loss"
+            if last_exit.reason == mt5.DEAL_REASON_SL
+            else "take profit"
+            if last_exit.reason == mt5.DEAL_REASON_TP
+            else "manual/other"
+        )
+        closed.append(
+            ClosedPositionRecord(
+                position_id=position_id,
+                symbol=str(first_entry.symbol),
+                action="BUY" if first_entry.type == mt5.DEAL_TYPE_BUY else "SELL",
+                volume=entry_volume,
+                open_price=open_price,
+                close_price=close_price,
+                stop_loss=(
+                    float(first_entry.sl) if float(getattr(first_entry, "sl", 0)) > 0 else None
+                ),
+                take_profit=(
+                    float(first_entry.tp) if float(getattr(first_entry, "tp", 0)) > 0 else None
+                ),
+                open_time=datetime.fromtimestamp(
+                    int(first_entry.time), timezone.utc
+                ),
+                close_time=datetime.fromtimestamp(int(last_exit.time), timezone.utc),
+                profit_loss=profit_loss,
+                exit_reason=reason,
+                magic=int(getattr(first_entry, "magic", 0)),
+            )
+        )
+    return closed

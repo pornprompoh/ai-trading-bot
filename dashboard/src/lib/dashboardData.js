@@ -32,7 +32,7 @@ export async function fetchAccountDashboard(accountId) {
     supabase
       .from('trades')
       .select(
-        'trade_id,ticket,symbol,action,volume,open_price,sl_price,tp_price,profit_loss,status,open_time,close_time,exit_reason',
+        'trade_id,ticket,symbol,action,execution_source,volume,open_price,sl_price,tp_price,profit_loss,status,open_time,close_time,exit_reason',
       )
       .eq('account_id', accountId)
       .order('open_time', { ascending: false })

@@ -16,6 +16,19 @@ function time(value) {
   })
 }
 
+function ExecutionSourceBadge({ source }) {
+  const isManual = source === 'MANUAL'
+  return (
+    <span className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[8px] font-bold tracking-wide ${
+      isManual
+        ? 'border-[#28545f] bg-[#122a31] text-[#7bd5e8]'
+        : 'border-[#36583b] bg-[#19291d] text-[#b6e783]'
+    }`}>
+      {isManual ? 'MANUAL' : 'AI BOT'}
+    </span>
+  )
+}
+
 function TradeSection({
   title,
   description,
@@ -74,7 +87,10 @@ function TradeSection({
                 <Fragment key={trade.id}>
                 <tr className="border-b border-[#1d282e] last:border-0 hover:bg-[#141d21]">
                   <td className="px-5 py-3.5">
-                    <p className="mono text-[11px] text-[#dce6e2]">#{trade.ticket}</p>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <p className="mono text-[11px] text-[#dce6e2]">#{trade.ticket}</p>
+                      <ExecutionSourceBadge source={trade.execution_source} />
+                    </div>
                     <p className="mt-1 text-xs font-medium text-[#aebcba]">{trade.symbol}</p>
                   </td>
                   <td className="px-3 py-3.5">
@@ -176,16 +192,25 @@ function TradeSection({
 export default function TradesTable({ trades, reflections = [] }) {
   const [search, setSearch] = useState('')
   const [sortAscending, setSortAscending] = useState(false)
+  const [sourceFilter, setSourceFilter] = useState('ALL')
 
   const filteredTrades = useMemo(() => {
     const query = search.trim().toLowerCase()
     return trades
-      .filter((trade) => !query || `${trade.ticket} ${trade.symbol}`.toLowerCase().includes(query))
+      .filter((trade) => {
+        const matchesSearch = !query
+          || `${trade.ticket} ${trade.symbol}`.toLowerCase().includes(query)
+        const source = trade.execution_source === 'MANUAL' ? 'MANUAL' : 'BOT_SMC'
+        const matchesSource = sourceFilter === 'ALL'
+          || (sourceFilter === 'BOT_SMC' && source === 'BOT_SMC')
+          || (sourceFilter === 'MANUAL' && source === 'MANUAL')
+        return matchesSearch && matchesSource
+      })
       .sort((a, b) => {
         const difference = new Date(a.opened_at).getTime() - new Date(b.opened_at).getTime()
         return sortAscending ? difference : -difference
       })
-  }, [search, sortAscending, trades])
+  }, [search, sortAscending, sourceFilter, trades])
   const openTrades = filteredTrades.filter((trade) => trade.status === 'open')
   const closedTrades = filteredTrades.filter((trade) => trade.status === 'closed')
   const reflectionsByTradeId = useMemo(
@@ -202,16 +227,47 @@ export default function TradesTable({ trades, reflections = [] }) {
           <h2 className="mt-1 text-lg font-semibold text-[#e8efec]">Trade activity</h2>
           <p className="mt-1 text-[11px] text-[#718186]">Open positions and completed trades, shown separately.</p>
         </div>
-        <label className="relative min-w-[180px] sm:w-64">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#718186]" size={14} />
-          <input
-            aria-label="Search trades"
-            className="h-10 w-full rounded-lg border border-[#27343a] bg-[#0b1115] pl-9 pr-3 text-xs text-[#e4ece9] outline-none placeholder:text-[#59686d] focus:border-[#536a54]"
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search ticket or symbol"
-            value={search}
-          />
-        </label>
+        <div className="flex flex-col gap-3 sm:items-end">
+          <label className="relative min-w-[180px] sm:w-64">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[#718186]" size={14} />
+            <input
+              aria-label="Search trades"
+              className="h-10 w-full rounded-lg border border-[#27343a] bg-[#0b1115] pl-9 pr-3 text-xs text-[#e4ece9] outline-none placeholder:text-[#59686d] focus:border-[#536a54]"
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search ticket or symbol"
+              value={search}
+            />
+          </label>
+          <div aria-label="Filter trades by execution source" className="flex items-center gap-1 rounded-lg border border-[#243037] bg-[#0b1115] p-1" role="group">
+            {[
+              { id: 'ALL', label: 'All', count: trades.length },
+              { id: 'BOT_SMC', label: 'AI Bot', count: trades.filter((trade) => trade.execution_source !== 'MANUAL').length },
+              { id: 'MANUAL', label: 'Manual', count: trades.filter((trade) => trade.execution_source === 'MANUAL').length },
+            ].map((item) => {
+              const selected = sourceFilter === item.id
+              return (
+                <button
+                  aria-pressed={selected}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[9px] font-semibold transition ${
+                    selected
+                      ? item.id === 'MANUAL'
+                        ? 'bg-[#17323a] text-[#8de0ee]'
+                        : item.id === 'BOT_SMC'
+                          ? 'bg-[#1d3024] text-[#b7ed83]'
+                          : 'bg-[#263237] text-[#e3ece8]'
+                      : 'text-[#78888b] hover:text-[#d4dfda]'
+                  }`}
+                  key={item.id}
+                  onClick={() => setSourceFilter(item.id)}
+                  type="button"
+                >
+                  {item.label}
+                  <span className="mono opacity-70">{item.count}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
       </section>
       <TradeSection
         description="Positions currently open in the trading account"

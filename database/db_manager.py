@@ -295,11 +295,73 @@ def record_trade_open(
     raise RuntimeError("Unexpected end of trade persistence retry loop.")
 
 
+def record_synced_trade(trade_data: Mapping[str, Any]) -> int:
+    """Insert an MT5-discovered trade or refresh its source while it is open."""
+    required = {
+        "account_id",
+        "ticket",
+        "symbol",
+        "action",
+        "volume",
+        "open_price",
+        "open_time",
+        "status",
+        "execution_source",
+    }
+    if required.difference(trade_data):
+        raise ValueError("Synced trade is missing required fields.")
+    if trade_data["execution_source"] not in {"BOT_SMC", "MANUAL"}:
+        raise ValueError("Invalid execution source.")
+
+    try:
+        client = get_supabase_client()
+        existing = (
+            client.table("trades")
+            .select("trade_id,status")
+            .eq("account_id", trade_data["account_id"])
+            .eq("ticket", trade_data["ticket"])
+            .limit(1)
+            .execute()
+        )
+        rows = existing.data or []
+        if rows:
+            row = _first_row(rows, "synced trade lookup")
+            trade_id = int(row["trade_id"])
+            values: dict[str, Any] = {
+                "execution_source": trade_data["execution_source"],
+            }
+            if row["status"] == "open" and trade_data["status"] == "open":
+                values.update(
+                    {
+                        "volume": trade_data["volume"],
+                        "sl_price": trade_data.get("sl_price"),
+                        "tp_price": trade_data.get("tp_price"),
+                    }
+                )
+            (
+                client.table("trades")
+                .update(values)
+                .eq("trade_id", trade_id)
+                .execute()
+            )
+            return trade_id
+
+        response = client.table("trades").insert(dict(trade_data)).execute()
+        return int(_first_row(response.data, "synced trade insert")["trade_id"])
+    except Exception:
+        logger.exception(
+            "Could not sync MT5 trade ticket=%s.",
+            trade_data.get("ticket"),
+        )
+        raise
+
+
 def record_trade_close(
     ticket: int,
     close_price: float,
     profit_loss: float,
     exit_reason: str,
+    close_time: str | None = None,
 ) -> bool:
     """Close the matching open trade; return whether a row was updated."""
     if ticket <= 0 or close_price <= 0:
@@ -314,12 +376,13 @@ def record_trade_close(
                     "close_price": close_price,
                     "profit_loss": profit_loss,
                     "exit_reason": exit_reason,
-                    "close_time": datetime.now(timezone.utc).isoformat(),
+                    "close_time": close_time or datetime.now(timezone.utc).isoformat(),
                     "status": "closed",
                 }
             )
             .eq("ticket", ticket)
             .eq("status", "open")
+            .select("trade_id")
             .execute()
         )
         updated = bool(response.data)

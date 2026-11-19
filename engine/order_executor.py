@@ -22,7 +22,8 @@ from engine.risk_manager import check_entry_risk
 from engine.strategy import calculate_indicators
 
 logger = logging.getLogger(__name__)
-MAGIC_NUMBER = 20261031
+BOT_MAGIC_NUMBER = 20261031
+MAGIC_NUMBER = BOT_MAGIC_NUMBER
 PARTIAL_CLOSE_COMMENT = "EnginePartial"
 
 
@@ -134,7 +135,7 @@ def open_order(
         "sl": round(stop_loss, int(info.digits)),
         "tp": round(take_profit, int(info.digits)),
         "deviation": MAX_SLIPPAGE_POINTS,
-        "magic": MAGIC_NUMBER,
+        "magic": BOT_MAGIC_NUMBER,
         "comment": "MultiAssetEngine",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": filling_mode,
@@ -168,6 +169,7 @@ def open_order(
         "ticket": int(result.order),
         "symbol": symbol,
         "action": direction,
+        "execution_source": "BOT_SMC",
         "volume": actual_volume,
         "open_price": float(result.price or price),
         "sl_price": float(request["sl"]),
@@ -222,6 +224,10 @@ def _modify_position_stop(
     tick: Any,
 ) -> bool:
     """Tighten a position stop without violating broker distance constraints."""
+    if int(getattr(position, "magic", 0)) != BOT_MAGIC_NUMBER:
+        raise RuntimeError(
+            f"Refusing to modify stop for non-bot position {position.ticket}."
+        )
     is_buy = position.type == mt5.POSITION_TYPE_BUY
     point = float(info.point)
     min_distance = max(
@@ -247,7 +253,7 @@ def _modify_position_stop(
         "position": int(position.ticket),
         "sl": round(stop_loss, int(info.digits)),
         "tp": float(position.tp),
-        "magic": MAGIC_NUMBER,
+        "magic": BOT_MAGIC_NUMBER,
         "comment": "EngineStopManagement",
     }
     result = mt5.order_send(request)
@@ -283,7 +289,7 @@ def _partial_close_completed(position: Any) -> bool:
     exit_entries = {mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY}
     return any(
         deal.entry in exit_entries
-        and int(getattr(deal, "magic", 0)) == MAGIC_NUMBER
+        and int(getattr(deal, "magic", 0)) == BOT_MAGIC_NUMBER
         and PARTIAL_CLOSE_COMMENT in str(getattr(deal, "comment", ""))
         for deal in deals
     )
@@ -291,6 +297,10 @@ def _partial_close_completed(position: Any) -> bool:
 
 def _close_half_position(position: Any, info: Any, tick: Any) -> bool:
     """Close exactly half only when broker volume increments allow it."""
+    if int(getattr(position, "magic", 0)) != BOT_MAGIC_NUMBER:
+        raise RuntimeError(
+            f"Refusing to partially close non-bot position {position.ticket}."
+        )
     step = float(info.volume_step)
     volume = float(position.volume)
     half = volume / 2.0
@@ -323,7 +333,7 @@ def _close_half_position(position: Any, info: Any, tick: Any) -> bool:
         "position": int(position.ticket),
         "price": price,
         "deviation": MAX_SLIPPAGE_POINTS,
-        "magic": MAGIC_NUMBER,
+        "magic": BOT_MAGIC_NUMBER,
         "comment": PARTIAL_CLOSE_COMMENT,
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": _filling_mode(info),
@@ -374,7 +384,7 @@ def manage_open_positions() -> None:
         raise RuntimeError(f"Could not list positions for management (code={code}): {message}")
 
     for position in positions:
-        if int(getattr(position, "magic", 0)) != MAGIC_NUMBER:
+        if int(getattr(position, "magic", 0)) != BOT_MAGIC_NUMBER:
             continue
         try:
             info = mt5.symbol_info(position.symbol)
@@ -422,14 +432,19 @@ def manage_open_positions() -> None:
 
 
 def close_all_positions() -> int:
-    """Close every position on the connected demo account, failing if any remain."""
+    """Close bot-managed positions only; leave every manual position untouched."""
     if not DEMO_ACCOUNT_ONLY or not is_demo_account():
         raise RuntimeError("Emergency close is restricted to MT5 demo accounts.")
 
-    positions = mt5.positions_get()
-    if positions is None:
+    all_positions = mt5.positions_get()
+    if all_positions is None:
         code, message = mt5.last_error()
         raise RuntimeError(f"Could not list MT5 positions (code={code}): {message}")
+    positions = [
+        position
+        for position in all_positions
+        if int(getattr(position, "magic", 0)) == BOT_MAGIC_NUMBER
+    ]
 
     closed_count = 0
     failures: list[str] = []
@@ -459,7 +474,7 @@ def close_all_positions() -> int:
             "position": int(position.ticket),
             "price": float(tick.bid if is_buy_position else tick.ask),
             "deviation": MAX_SLIPPAGE_POINTS,
-            "magic": MAGIC_NUMBER,
+            "magic": BOT_MAGIC_NUMBER,
             "comment": "EmergencyCloseAll",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_mode,
@@ -484,11 +499,17 @@ def close_all_positions() -> int:
         else:
             closed_count += 1
 
-    remaining = mt5.positions_get()
-    if remaining is None:
+    remaining_positions = mt5.positions_get()
+    if remaining_positions is None:
         code, message = mt5.last_error()
         failures.append(f"Could not verify remaining positions (code={code}): {message}")
-    elif remaining:
+    else:
+        remaining = [
+            position
+            for position in remaining_positions
+            if int(getattr(position, "magic", 0)) == BOT_MAGIC_NUMBER
+        ]
+    if remaining_positions is not None and remaining:
         failures.append(
             "Positions remain open: "
             + ", ".join(str(position.ticket) for position in remaining)

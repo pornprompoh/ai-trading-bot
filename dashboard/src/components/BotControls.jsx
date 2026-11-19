@@ -86,7 +86,7 @@ export default function BotControls({
             onClick={() => setDialog('close_all')}
             type="button"
           >
-            <AlertTriangle size={14} /> Emergency stop &amp; close all
+            <AlertTriangle size={14} /> Stop bot &amp; close bot trades
           </button>
         </div>
       </div>
@@ -118,12 +118,12 @@ export default function BotControls({
               <div>
                 <h3 className="text-sm font-semibold text-[#e8efec]" id="bot-control-title">
                   {dialog === 'close_all'
-                    ? 'Emergency stop and close all?'
+                    ? 'Emergency stop and close bot trades?'
                     : `Turn auto-trading ${dialog === 'enable' ? 'on' : 'off'}?`}
                 </h3>
                 <p className="mt-2 text-xs leading-6 text-[#9aa8a8]">
                   {dialog === 'close_all'
-                    ? `This immediately disables new entries and queues the MT5 engine to close every position on Demo account #${account.login}. It will not execute from this browser.`
+                    ? `This immediately disables new entries and queues the MT5 engine to close only AI BOT positions on Demo account #${account.login}. MANUAL positions will remain untouched. It will not execute from this browser.`
                     : dialog === 'enable'
                       ? 'The engine may open new positions after this change only if its server-side environment gate is also enabled.'
                       : 'The engine will stop opening new positions. Existing positions are not closed by this action.'}

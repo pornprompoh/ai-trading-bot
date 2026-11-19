@@ -16,11 +16,12 @@ create table if not exists public.trades (
     ticket bigint not null,
     symbol varchar not null,
     action varchar not null,
+    execution_source text not null default 'BOT_SMC',
     volume numeric not null,
     open_price numeric not null,
     close_price numeric,
-    sl_price numeric not null,
-    tp_price numeric not null,
+    sl_price numeric,
+    tp_price numeric,
     open_time timestamptz not null,
     close_time timestamptz,
     profit_loss numeric,
@@ -231,6 +232,7 @@ grant select on public.trading_accounts to authenticated;
 revoke update on public.trading_accounts from anon, authenticated;
 grant update (auto_trading) on public.trading_accounts to authenticated;
 grant select on public.trades to authenticated;
+grant select, insert, update on public.trades to service_role;
 grant select on public.ai_trade_logs to authenticated;
 grant select on public.account_equity_snapshots to authenticated;
 grant select on public.dashboard_market_scans to authenticated;
